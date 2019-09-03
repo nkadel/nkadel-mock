@@ -19,22 +19,16 @@ BuildArch:  noarch
 # distribution-gpg-keys contains GPG keys used by mock configs
 Requires:   distribution-gpg-keys >= 1.29
 
+Requires(pre):  shadow-utils
+
 Requires(post): coreutils
-%if 0%{?fedora} || 0%{?mageia} || 0%{?rhel} > 7
+Requires(post): sed
+Requires(post): yum
 # to detect correct default.cfg
 Requires(post): python3-dnf
 Requires(post): python3-hawkey
-Requires(post): system-release
 Requires(post): python3
-Requires(post): sed
-%endif
-Requires(pre):  shadow-utils
-%if 0%{?rhel} && 0%{?rhel} <= 7
-# to detect correct default.cfg
-Requires(post): python
-Requires(post): yum
-Requires(post): /etc/os-release
-%endif
+Requires(post): system-release
 
 %description
 Config files which allow you to create chroots for:
