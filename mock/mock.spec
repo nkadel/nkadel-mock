@@ -1,17 +1,5 @@
 %bcond_with tests
 
-%if 0%{?fedora} || 0%{?mageia} || 0%{?rhel} >= 7
-%global use_python3 1
-%global use_python2 0
-%global __python %{__python3}
-%global python_sitelib %{python3_sitelib}
-%else
-%global use_python3 0
-%global use_python2 1
-%global __python %{__python2}
-%global python_sitelib %{python2_sitelib}
-%endif
-
 Summary: Builds packages inside chroots
 Name: mock
 Version: 1.4.19
@@ -34,22 +22,16 @@ Requires: usermode
 %endif
 Requires: createrepo_c
 Requires: mock-core-configs >= 27.4
-%if 0%{?use_python2}
-Requires: pyliblzma
-%endif
 Requires: systemd
 %if 0%{?fedora} || 0%{?rhel} >= 8
 Requires: systemd-container
-%endif
-Requires: coreutils
-%if 0%{?fedora}
 Suggests: iproute
 %endif
+Requires: coreutils
 %if 0%{?mageia}
 Suggests: iproute2
 %endif
 BuildRequires: bash-completion
-%if %{use_python3}
 Requires: python%{python3_pkgversion}-distro
 Requires: python%{python3_pkgversion}-jinja2
 Requires: python%{python3_pkgversion}-six >= 1.4.0
@@ -59,18 +41,6 @@ Requires: python%{python3_pkgversion}-pyroute2
 BuildRequires: python%{python3_pkgversion}-devel
 %if %{with tests}
 BuildRequires: python%{python3_pkgversion}-pylint
-%endif
-%else
-Requires: python-ctypes
-Requires: python2-distro
-Requires: python-jinja2
-Requires: python-six >= 1.4.0
-Requires: python-requests
-Requires: python2-pyroute2
-Requires: python >= 2.7
-Requires: rpm-python
-BuildRequires: python2-devel
-%endif
 %if 0%{?fedora} || 0%{?mageia} || 0%{?rhel} >= 8
 Requires: dnf
 Suggests: yum
@@ -80,14 +50,12 @@ Recommends: dnf-utils
 Suggests: qemu-user-static
 Suggests: procenv
 %else
-%if 0%{?rhel} == 7
 Requires: btrfs-progs
 Requires: yum >= 2.4
 Requires: yum-utils
 %endif
-%endif
 
-%if 0%{?fedora} || 0%{?rhel} >= 8
+%if 0%{?fedora} || 0%{?rhel}
 BuildRequires: perl-interpreter
 %else
 BuildRequires: perl
@@ -131,15 +99,15 @@ of the buildroot.
 %prep
 %setup -q
 for file in py/mock.py py/mockchain.py py/mock-parse-buildlog.py; do
-  sed -i 1"s|#!/usr/bin/python3 |#!%{__python} |" $file
+  sed -i 1"s|#!/usr/bin/python3 |#!%{__python3} |" $file
 done
 
 %build
 for i in py/mock.py py/mockchain.py py/mock-parse-buildlog.py; do
     perl -p -i -e 's|^__VERSION__\s*=.*|__VERSION__="%{version}"|' $i
     perl -p -i -e 's|^SYSCONFDIR\s*=.*|SYSCONFDIR="%{_sysconfdir}"|' $i
-    perl -p -i -e 's|^PYTHONDIR\s*=.*|PYTHONDIR="%{python_sitelib}"|' $i
-    perl -p -i -e 's|^PKGPYTHONDIR\s*=.*|PKGPYTHONDIR="%{python_sitelib}/mockbuild"|' $i
+    perl -p -i -e 's|^PYTHONDIR\s*=.*|PYTHONDIR="%{python3_sitelib}"|' $i
+    perl -p -i -e 's|^PKGPYTHONDIR\s*=.*|PKGPYTHONDIR="%{python3_sitelib}/mockbuild"|' $i
 done
 for i in docs/mockchain.1 docs/mock.1 docs/mock-parse-buildlog.1; do
     perl -p -i -e 's|\@VERSION\@|%{version}"|' $i
@@ -171,8 +139,8 @@ ln -s mock %{buildroot}%{_datadir}/bash-completion/completions/mock-parse-buildl
 install -d %{buildroot}%{_sysconfdir}/pki/mock
 cp -a etc/pki/* %{buildroot}%{_sysconfdir}/pki/mock/
 
-install -d %{buildroot}%{python_sitelib}/
-cp -a py/mockbuild %{buildroot}%{python_sitelib}/
+install -d %{buildroot}%{python3_sitelib}/
+cp -a py/mockbuild %{buildroot}%{python3_sitelib}/
 
 install -d %{buildroot}%{_mandir}/man1
 cp -a docs/mockchain.1 docs/mock.1 docs/mock-parse-buildlog.1 %{buildroot}%{_mandir}/man1/
@@ -204,9 +172,9 @@ pylint-3 py/mockbuild/ py/*.py py/mockbuild/plugins/* || :
 %{_libexecdir}/mock
 
 # python stuff
-%{python_sitelib}/*
-%exclude %{python_sitelib}/mockbuild/scm.*
-%exclude %{python_sitelib}/mockbuild/plugins/lvm_root.*
+%{python3_sitelib}/*
+%exclude %{python3_sitelib}/mockbuild/scm.*
+%exclude %{python3_sitelib}/mockbuild/plugins/lvm_root.*
 
 # config files
 %config(noreplace) %{_sysconfdir}/%{name}/*.ini
@@ -229,18 +197,18 @@ pylint-3 py/mockbuild/ py/*.py py/mockbuild/plugins/* || :
 %dir %{_localstatedir}/lib/mock
 
 %files scm
-%{python_sitelib}/mockbuild/scm.py*
-%if %{use_python3}
+%{python3_sitelib}/mockbuild/scm.py*
 %{python3_sitelib}/mockbuild/__pycache__/scm.*.py*
-%endif
 
 %files lvm
-%{python_sitelib}/mockbuild/plugins/lvm_root.*
-%if %{use_python3}
+%{python3_sitelib}/mockbuild/plugins/lvm_root.*
 %{python3_sitelib}/mockbuild/plugins/__pycache__/lvm_root.*.py*
-%endif
 
 %changelog
+* Mon Sep 13 2019 Nico Kadel-Garcia <nkadel@gmail.com>
+- Discard python2 settings
+- Enforce python3 settings
+
 * Tue Sep 10 2019 Miroslav Suchý <msuchy@redhat.com> 1.4.19-1
 - results should be owned by unpriv user [GH#322]
 - do not build with tests by default
