@@ -51,7 +51,7 @@ class Commands(object):
         self.chroot_file_contents = config['files']
         self.chroot_setup_cmd = config['chroot_setup_cmd']
         self.nspawn_args = config['nspawn_args']
-        if isinstance(self.chroot_setup_cmd, util.basestring):
+        if isinstance(self.chroot_setup_cmd, str):
             # accept strings in addition to other sequence types
             self.chroot_setup_cmd = self.chroot_setup_cmd.split()
         self.more_buildreqs = config['more_buildreqs']
@@ -105,10 +105,12 @@ class Commands(object):
                 self.plugins.call_hooks('clean')
                 if self.bootstrap_buildroot is not None:
                     self.bootstrap_buildroot.plugins.call_hooks('clean')
+
                 for scrub in scrub_opts:
                     self.plugins.call_hooks('scrub', scrub)
                     if self.bootstrap_buildroot is not None:
                         self.bootstrap_buildroot.plugins.call_hooks('scrub', scrub)
+
                     if scrub == 'all':
                         self.buildroot.root_log.info("scrubbing everything for %s", self.config_name)
                         self.buildroot.delete()
@@ -119,34 +121,24 @@ class Commands(object):
                     elif scrub == 'chroot':
                         self.buildroot.root_log.info("scrubbing chroot for %s", self.config_name)
                         self.buildroot.delete()
-                        if self.bootstrap_buildroot is not None:
-                            self.bootstrap_buildroot.delete()
                     elif scrub == 'cache':
                         self.buildroot.root_log.info("scrubbing cache for %s", self.config_name)
                         util.rmtree(self.buildroot.cachedir, selinux=self.buildroot.selinux)
-                        if self.bootstrap_buildroot is not None:
-                            util.rmtree(self.bootstrap_buildroot.cachedir, selinux=self.bootstrap_buildroot.selinux)
                     elif scrub == 'c-cache':
                         self.buildroot.root_log.info("scrubbing c-cache for %s", self.config_name)
                         util.rmtree(os.path.join(self.buildroot.cachedir, 'ccache'), selinux=self.buildroot.selinux)
-                        if self.bootstrap_buildroot is not None:
-                            util.rmtree(os.path.join(self.bootstrap_buildroot.cachedir, 'ccache'),
-                                        selinux=self.bootstrap_buildroot.selinux)
                     elif scrub == 'root-cache':
                         self.buildroot.root_log.info("scrubbing root-cache for %s", self.config_name)
                         util.rmtree(os.path.join(self.buildroot.cachedir, 'root_cache'), selinux=self.buildroot.selinux)
-                        if self.bootstrap_buildroot is not None:
-                            util.rmtree(os.path.join(self.bootstrap_buildroot.cachedir, 'root_cache'),
-                                        selinux=self.bootstrap_buildroot.selinux)
                     elif scrub in ['yum-cache', 'dnf-cache']:
                         self.buildroot.root_log.info("scrubbing yum-cache and dnf-cache for %s", self.config_name)
                         util.rmtree(os.path.join(self.buildroot.cachedir, 'yum_cache'), selinux=self.buildroot.selinux)
                         util.rmtree(os.path.join(self.buildroot.cachedir, 'dnf_cache'), selinux=self.buildroot.selinux)
-                        if self.bootstrap_buildroot is not None:
-                            util.rmtree(os.path.join(self.bootstrap_buildroot.cachedir, 'yum_cache'),
-                                        selinux=self.bootstrap_buildroot.selinux)
-                            util.rmtree(os.path.join(self.bootstrap_buildroot.cachedir, 'dnf_cache'),
-                                        selinux=self.bootstrap_buildroot.selinux)
+                    elif scrub == 'bootstrap' and self.bootstrap_buildroot is not None:
+                        self.buildroot.root_log.info("scrubbing bootstrap for %s", self.config_name)
+                        self.bootstrap_buildroot.delete()
+                        util.rmtree(self.bootstrap_buildroot.cachedir, selinux=self.bootstrap_buildroot.selinux)
+
             except IOError as e:
                 getLog().warning("parts of chroot do not exist: %s", e)
                 raise
@@ -215,6 +207,8 @@ class Commands(object):
     @traceLog()
     def installSpecDeps(self, spec_file):
         try:
+            # pylint: disable=no-member
+            spec_file = util.host_file(spec_file)
             spec = rpm.spec(spec_file).sourceHeader.dsFromHeader()
             self.uid_manager.becomeUser(0, 0)
             for i in range(len(spec)): # pylint: disable=consider-using-enumerate
@@ -283,6 +277,7 @@ class Commands(object):
 
             # Check if we will have dynamic BuildRequires, but do not allow it
             hdr = next(util.yieldSrpmHeaders((rebuilt_srpm,)))
+            # pylint: disable=no-member
             requires = {util._to_text(req) for req in hdr[rpm.RPMTAG_REQUIRES]}
             dynamic_buildreqs = 'rpmlib(DynamicBuildRequires)' in requires
 
@@ -295,13 +290,17 @@ class Commands(object):
             buildsetup_finished = True
 
             rpmbuildstate = "rpmbuild %s" % baserpm
-            self.state.start(rpmbuildstate)
 
             # tell caching we are building
             self.plugins.call_hooks('prebuild')
             # intentionally we do not call bootstrap hook here - it does not have sense
 
-            results = self.rebuild_package(spec_path, timeout, check, dynamic_buildreqs)
+            try:
+                self.state.start(rpmbuildstate)
+                results = self.rebuild_package(spec_path, timeout, check, dynamic_buildreqs)
+            finally:
+                self.state.finish(rpmbuildstate)
+
             # In the nspawn case, we retained root until here, but we
             # need to ensure our output files are owned by the caller's uid.
             # So drop them now.
@@ -316,7 +315,6 @@ class Commands(object):
                 raise PkgError('No build results found')
             self.state.result = 'success'
 
-            self.state.finish(rpmbuildstate)
         finally:
             if not buildsetup_finished:
                 self.state.finish(buildsetup)
@@ -405,27 +403,27 @@ class Commands(object):
         # create a tempdir for our local info
         if options.localrepo:
             local_tmp_dir = os.path.abspath(options.localrepo)
-            if not os.path.exists(local_tmp_dir):
-                os.makedirs(local_tmp_dir)
-                os.chmod(local_tmp_dir, 0o755)
         else:
             pre = 'mock-chain-{0}-'.format(self.config['uniqueext'])
-            local_tmp_dir = tempfile.mkdtemp(prefix=pre, dir='/var/tmp')
-            os.chmod(local_tmp_dir, 0o755)
+            with self.uid_manager:
+                local_tmp_dir = tempfile.mkdtemp(prefix=pre, dir='/var/tmp')
 
-        self.config['local_repo_dir'] = os.path.normpath(local_tmp_dir + '/results/' + self.config['chroot_name'] + '/')
-
-        if not os.path.exists(self.config['local_repo_dir']):
-            os.makedirs(self.config['local_repo_dir'], mode=0o755)
+        with self.uid_manager:
+            self.config['local_repo_dir'] = os.path.normpath(
+                local_tmp_dir + '/results/' + self.config['chroot_name'] + '/')
+            util.mkdirIfAbsent(self.config['local_repo_dir'])
 
         local_baseurl = "file://{0}".format(self.config['local_repo_dir'])
         log.info("results dir: %s", self.config['local_repo_dir'])
         # modify with localrepo
-        util.add_local_repo(self.config, local_baseurl, 'local_build_repo')
+        util.add_local_repo(self.config, local_baseurl, 'local_build_repo',
+                            bootstrap=buildroot.bootstrap_buildroot)
         for baseurl in options.repos:
-            util.add_local_repo(self.config, baseurl)
+            util.add_local_repo(self.config, baseurl,
+                                bootstrap=buildroot.bootstrap_buildroot)
 
-        util.createrepo(self.config, self.config['local_repo_dir'])
+        with self.uid_manager:
+            util.createrepo(self.config, self.config['local_repo_dir'])
 
         download_dir = tempfile.mkdtemp()
         downloaded_pkgs = {}
@@ -484,32 +482,32 @@ class Commands(object):
                     except Error:
                         build_ret_code = 1
                     finally:
-                        buildroot.uid_manager.becomeUser(0, 0)
                         buildroot.finalize()
                         if buildroot.bootstrap_buildroot is not None:
                             buildroot.bootstrap_buildroot.finalize()
-                            buildroot.uid_manager.restorePrivs()
                 except (RootError,) as e:
                     log.warning(e.msg)
                     failed.append(pkg)
                 log.info("End chain build: %s", pkg)
-                if build_ret_code == 1:
-                    failed.append(pkg)
-                    log.info("Error building %s.", os.path.basename(pkg))
-                    if options.recurse:
-                        log.info("Will try to build again (if some other package will succeed).")
-                    else:
-                        log.info("See logs/results in %s", self.config['local_repo_dir'])
-                        util.touch(os.path.join(resultdir, 'fail'))
-                elif build_ret_code == 0:
-                    log.info("Success building %s", os.path.basename(pkg))
-                    built_pkgs.append(pkg)
-                    util.touch(success_file)
-                    # createrepo with the new pkgs
-                    util.createrepo(self.config, self.config['local_repo_dir'])
-                elif build_ret_code == 2:
-                    log.info("Skipping already built pkg %s", os.path.basename(pkg))
-                    skipped_pkgs.append(pkg)
+
+                with self.uid_manager:
+                    if build_ret_code == 1:
+                        failed.append(pkg)
+                        log.info("Error building %s.", os.path.basename(pkg))
+                        if options.recurse:
+                            log.info("Will try to build again (if some other package will succeed).")
+                        else:
+                            log.info("See logs/results in %s", self.config['local_repo_dir'])
+                            util.touch(os.path.join(resultdir, 'fail'))
+                    elif build_ret_code == 0:
+                        log.info("Success building %s", os.path.basename(pkg))
+                        built_pkgs.append(pkg)
+                        util.touch(success_file)
+                        # createrepo with the new pkgs
+                        util.createrepo(self.config, self.config['local_repo_dir'])
+                    elif build_ret_code == 2:
+                        log.info("Skipping already built pkg %s", os.path.basename(pkg))
+                        skipped_pkgs.append(pkg)
 
             if failed and options.recurse:
                 if len(failed) != len(to_be_built):
@@ -751,14 +749,10 @@ class Commands(object):
     @traceLog()
     def copy_build_results(self, results):
         self.buildroot.root_log.debug("Copying packages to result dir")
-        self.buildroot.uid_manager.becomeUser(0, 0)
         ret = []
         for item in results:
             shutil.copy2(item, self.buildroot.resultdir)
             ret.append(os.path.join(self.buildroot.resultdir, os.path.split(item)[1]))
-        self.buildroot.uid_manager.changeOwner(self.buildroot.resultdir,
-                                               recursive=True)
-        self.buildroot.uid_manager.restorePrivs()
         return ret
 
     @traceLog()

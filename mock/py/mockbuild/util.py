@@ -41,23 +41,16 @@ import distro
 import jinja2
 import six
 
+from mockbuild.mounts import BindMountPoint
+
 from . import exception
 from .trace_decorator import getLog, traceLog
 from .uid import getresuid, setresuid
 from pyroute2 import IPRoute
-# pylint: disable=useless-import-alias,no-name-in-module
-if six.PY2:
-    from collections import MutableMapping as MutableMapping
-else:
-    from collections.abc import MutableMapping as MutableMapping
+# pylint: disable=no-name-in-module
+from collections.abc import MutableMapping
 
 encoding = locale.getpreferredencoding()
-
-try:
-    # pylint: disable=used-before-assignment
-    basestring = basestring
-except NameError:
-    basestring = str
 
 _libc = ctypes.cdll.LoadLibrary(None)
 _libc.personality.argtypes = [ctypes.c_ulong]
@@ -145,7 +138,7 @@ class TemplatedDictionary(MutableMapping):
     def copy(self):
         return TemplatedDictionary(self.__dict__)
     def __render_value(self, value):
-        if isinstance(value, basestring):
+        if isinstance(value, str):
             return self.__render_string(value)
         elif isinstance(value, list):
             # we cannot use list comprehension here, as we need to NOT modify the list (pointer to list)
@@ -166,16 +159,15 @@ class TemplatedDictionary(MutableMapping):
         return _to_native(template.render(self.__dict__))
 
 
-def _to_bytes(obj, arg_encoding='utf-8', errors='strict', nonstring='strict'):
-    if isinstance(obj, six.binary_type):
-        return obj
-    elif isinstance(obj, six.text_type):
-        return obj.encode(arg_encoding, errors)
-    else:
-        if nonstring == 'strict':
-            raise TypeError('First argument must be a string')
-        raise ValueError('nonstring must be one of: ["strict",]')
-
+#def _to_bytes(obj, arg_encoding='utf-8', errors='strict', nonstring='strict'):
+#    if isinstance(obj, six.binary_type):
+#        return obj
+#    elif isinstance(obj, six.text_type):
+#        return obj.encode(arg_encoding, errors)
+#    else:
+#        if nonstring == 'strict':
+#            raise TypeError('First argument must be a string')
+#        raise ValueError('nonstring must be one of: ["strict",]')
 
 def _to_text(obj, arg_encoding='utf-8', errors='strict', nonstring='strict'):
     if isinstance(obj, six.text_type):
@@ -187,11 +179,7 @@ def _to_text(obj, arg_encoding='utf-8', errors='strict', nonstring='strict'):
             raise TypeError('First argument must be a string')
         raise ValueError('nonstring must be one of: ["strict",]')
 
-
-if six.PY2:
-    _to_native = _to_bytes
-else:
-    _to_native = _to_text
+_to_native = _to_text
 
 
 @traceLog()
@@ -353,6 +341,7 @@ def yieldSrpmHeaders(srpms, plainRpmOk=0):
     flags = (rpm._RPMVSF_NOSIGNATURES | rpm._RPMVSF_NODIGESTS)
     ts.setVSFlags(flags)
     for srpm in srpms:
+        srpm = host_file(srpm)
         try:
             fd = os.open(srpm, os.O_RDONLY)
         except OSError as e:
@@ -410,7 +399,7 @@ def getAddtlReqs(hdr, conf):
                       '-'.join([name])]:
         if this_srpm in conf:
             more_reqs = conf[this_srpm]
-            if isinstance(more_reqs, basestring):
+            if isinstance(more_reqs, str):
                 reqlist.append(more_reqs)
             else:
                 reqlist.extend(more_reqs)
@@ -674,6 +663,7 @@ def do_with_status(command, shell=False, chrootPath=None, cwd=None, timeout=0, r
     if env is None:
         env = clean_env()
     stdout = None
+    command = [str(x) for x in command]
     try:
         child = None
         if shell and isinstance(command, list):
@@ -776,6 +766,24 @@ class ChildPreExec(object):
         reset_sigpipe()
 
 
+class BindMountedFile(str):
+    'see host_file() doc'
+    def __new__(cls, value, on_host=None):
+        the_string = str.__new__(cls, value)
+        the_string.on_host = on_host if on_host else value
+        return the_string
+
+
+def host_file(file):
+    """
+    Some functions accept arguments which may be either str() or
+    BindMountedFile();  we use this helper to work with those transparently.
+    TODO: all the code parts which need this should be fixed so they
+    are executed _inside_ bootstrap chroot, not on host.
+    """
+    return file.on_host if hasattr(file, 'on_host') else file
+
+
 def reset_sigpipe():
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
@@ -850,7 +858,7 @@ def doshell(chrootPath=None, environ=None, uid=None, gid=None, cmd=None,
     if cmd:
         if not isinstance(cmd, list):
             cmd = [cmd]
-        cmd = ['/bin/sh', '-c'] + cmd
+        cmd = ['/bin/sh', '-c'] + [str(x) for x in cmd]
     else:
         cmd = ["/bin/sh", "-i", "-l"]
     if USE_NSPAWN:
@@ -905,7 +913,7 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
     config_opts = TemplatedDictionary()
     config_opts['version'] = version
     config_opts['basedir'] = '/var/lib/mock'  # root name is automatically added to this
-    config_opts['resultdir'] = '%(basedir)s/%(root)s/result'
+    config_opts['resultdir'] = '{{basedir}}/{{root}}/result'
     config_opts['cache_topdir'] = '/var/cache/mock'
     config_opts['clean'] = True
     config_opts['check'] = True
@@ -931,6 +939,9 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
     config_opts['use_container_host_hostname'] = True
     config_opts['use_bootstrap_container'] = False
 
+    config_opts['use_bootstrap_image'] = False
+    config_opts['bootstrap_image'] = 'fedora:latest'
+
     config_opts['internal_dev_setup'] = True
 
     # cleanup_on_* only take effect for separate --resultdir
@@ -947,7 +958,7 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
     config_opts['tar'] = "gnutar"
 
     config_opts['backup_on_clean'] = False
-    config_opts['backup_base_dir'] = os.path.join(config_opts['basedir'], "backup")
+    config_opts['backup_base_dir'] = "{{basedir}}/backup"
 
     config_opts['redhat_subscription_required'] = False
 
@@ -963,23 +974,24 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
         'ccache_opts': {
             'max_cache_size': "4G",
             'compress': None,
-            'dir': "%(cache_topdir)s/%(root)s/ccache/u%(chrootuid)s/"},
+            'dir': "{{cache_topdir}}/{{root}}/ccache/u{{chrootuid}}/"},
         'yum_cache_enable': True,
         'yum_cache_opts': {
             'max_age_days': 30,
             'max_metadata_age_days': 30,
-            'dir': "%(cache_topdir)s/%(root)s/%(package_manager)s_cache/",
-            'target_dir': "/var/cache/%(package_manager)s/",
+            'dir': "{{cache_topdir}}/{{root}}/{{package_manager}}_cache/",
+            'target_dir': "/var/cache/{{package_manager}}/",
             'online': True},
         'root_cache_enable': True,
         'root_cache_opts': {
             'age_check': True,
             'max_age_days': 15,
-            'dir': "%(cache_topdir)s/%(root)s/root_cache/",
+            'dir': "{{cache_topdir}}/{{root}}/root_cache/",
             'tar': "gnutar",
             'compress_program': 'pigz',
             'decompress_program': None,
-            'exclude_dirs': ["./proc", "./sys", "./dev", "./tmp/ccache", "./var/cache/yum", "./var/cache/dnf"],
+            'exclude_dirs': ["./proc", "./sys", "./dev", "./tmp/ccache", "./var/cache/yum", "./var/cache/dnf",
+                             "./var/log"],
             'extension': '.gz'},
         'bind_mount_enable': True,
         'bind_mount_opts': {
@@ -1022,7 +1034,7 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
         'sign_enable': False,
         'sign_opts': {
             'cmd': 'rpmsign',
-            'opts': '--addsign %(rpms)s',
+            'opts': '--addsign {{rpms}}',
         },
         'hw_info_enable': True,
         'hw_info_opts': {
@@ -1030,6 +1042,11 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
         'procenv_enable': False,
         'procenv_opts': {
         },
+        'compress_logs_enable': False,
+        'compress_logs_opts': {
+            'command': 'gzip',
+        },
+
     }
 
     config_opts['environment'] = {
@@ -1072,13 +1089,14 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
 
     # dependent on guest OS
     config_opts['useradd'] = \
-        '/usr/sbin/useradd -o -m -u %(uid)s -g %(gid)s -d %(home)s -n %(user)s'
+        '/usr/sbin/useradd -o -m -u {{chrootuid}} -g {{chrootgid}} -d {{chroothome}} -n {{chrootuser}}'
     config_opts['use_host_resolv'] = False
     config_opts['chroot_setup_cmd'] = ('groupinstall', 'buildsys-build')
     config_opts['target_arch'] = 'i386'
     config_opts['releasever'] = None
     config_opts['rpmbuild_arch'] = None  # <-- None means set automatically from target_arch
     config_opts['yum.conf'] = ''
+    config_opts['dnf_vars'] = {}
     config_opts['yum_builddep_opts'] = []
     config_opts['yum_common_opts'] = []
     config_opts['update_before_build'] = True
@@ -1106,7 +1124,9 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
     config_opts['no_root_shells'] = False
     config_opts['extra_chroot_dirs'] = []
 
-    config_opts['package_manager'] = 'yum'
+    config_opts['package_manager'] = 'dnf'
+    config_opts['package_manager_max_attempts'] = 1
+    config_opts['package_manager_attempt_delay'] = 10
 
     config_opts['dynamic_buildrequires'] = True
     config_opts['dynamic_buildrequires_max_loops'] = 10
@@ -1231,6 +1251,8 @@ def set_config_opts_per_cmdline(config_opts, options, args):
         config_opts['rpmbuild_timeout'] = options.rpmbuild_timeout
     if options.bootstrapchroot is not None:
         config_opts['use_bootstrap_container'] = options.bootstrapchroot
+    if options.usebootstrapimage is not None:
+        config_opts['use_bootstrap_image'] = options.usebootstrapimage
 
     for i in options.disabled_plugins:
         if i not in config_opts['plugins']:
@@ -1587,7 +1609,7 @@ def generate_repo_id(baseurl):
 
 
 @traceLog()
-def add_local_repo(config_opts, baseurl, repoid=None):
+def add_local_repo(config_opts, baseurl, repoid=None, bootstrap=None):
     if not repoid:
         repoid = generate_repo_id(baseurl)
     else:
@@ -1598,13 +1620,21 @@ def add_local_repo(config_opts, baseurl, repoid=None):
 name={baseurl}
 baseurl={baseurl}
 enabled=1
-skip_if_unavailable=1
+skip_if_unavailable=0
 metadata_expire=0
 cost=1
 best=1
 """.format(repoid=repoid, baseurl=baseurl)
 
     config_opts['yum.conf'] += localyumrepo
+
+    if bootstrap is None or not baseurl.startswith("file:///"):
+        return
+
+    local_dir = baseurl.replace("file://", "", 1)
+    mountpoint = bootstrap.make_chroot_path(local_dir)
+    bootstrap.mounts.add(BindMountPoint(srcpath=local_dir,
+                                        bindpath=mountpoint))
 
 
 def subscription_redhat_init(opts):
@@ -1637,3 +1667,8 @@ def subscription_redhat_init(opts):
     # Use the first available key.
     key_file_name = os.path.basename(keys[0])
     opts['redhat_subscription_key_id'] = key_file_name.split('-')[0]
+
+
+def is_host_rh_family():
+    distro_name = distro.linux_distribution(full_distribution_name=False)[0]
+    return distro_name in RHEL_CLONES + ['fedora']

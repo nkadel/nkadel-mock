@@ -147,7 +147,7 @@ def command_parse():
                       dest="mode",
                       help="completely remove the specified chroot")
     scrub_choices = ('chroot', 'cache', 'root-cache', 'c-cache', 'yum-cache',
-                     'dnf-cache', 'lvm', 'overlayfs', 'all')
+                     'dnf-cache', 'lvm', 'overlayfs', 'bootstrap', 'all')
     scrub_metavar = "[all|chroot|cache|root-cache|c-cache|yum-cache|dnf-cache]"
     parser.add_option("--scrub", action="callback", type="choice", default=[],
                       choices=scrub_choices, metavar=scrub_metavar,
@@ -212,7 +212,8 @@ def command_parse():
                                         "mounted from separate device (LVM/overlayfs)")
     # chain
     parser.add_option('--localrepo', default=None,
-                      help="local path for the local repo, defaults to making its own")
+                      help=("local path for the local repo, defaults to making "
+                            "its own (--chain mode only)"))
     parser.add_option('-c', '--continue', default=False, action='store_true',
                       dest='cont',
                       help="if a pkg fails to build, continue to the next one")
@@ -371,10 +372,16 @@ def command_parse():
     parser.add_option("--dnf", help="use dnf as package manager",
                       dest="pkg_manager", action="store_const", const="dnf")
 
+    # Bootstrap options
     parser.add_option('--bootstrap-chroot', dest='bootstrapchroot', action='store_true',
                       help="build in two stages, using chroot rpm for creating the build chroot")
     parser.add_option('--no-bootstrap-chroot', dest='bootstrapchroot', action='store_false',
                       help="build in a single stage, using system rpm for creating the build chroot")
+
+    parser.add_option('--use-bootstrap-image', dest='usebootstrapimage', action='store_true',
+                      help="create bootstrap chroot from container image")
+    parser.add_option('--no-bootstrap-image', dest='usebootstrapimage', action='store_false',
+                      help="don't create bootstrap chroot from container image")
 
     (options, args) = parser.parse_args()
 
@@ -397,6 +404,11 @@ def command_parse():
         if not options.scm:
             raise mockbuild.exception.BadCmdline("Must specify both --spec and "
                                                  "--sources with --buildsrpm")
+
+    if options.localrepo and options.mode != 'chain':
+        raise mockbuild.exception.BadCmdline(
+            "The --localrepo option works only with --chain")
+
     if options.spec:
         options.spec = os.path.expanduser(options.spec)
     if options.sources:
@@ -407,7 +419,7 @@ def command_parse():
 
 def handle_signals(buildroot, number, frame):
 
-    log.info("\nReceived signal {} activating orphansKill".format(signal_names[number]))
+    log.info("\nReceived signal %s activating orphansKill", signal_names[number])
     util.orphansKill(buildroot.make_chroot_path())
     sys.exit(128 + number)
 
@@ -504,10 +516,23 @@ def check_arch_combination(target_arch, config_opts):
         return
     host_arch = os.uname()[-1]
     if (host_arch not in legal) and not config_opts['forcearch']:
-        log.info("Unable to build arch {0} natively on arch {1}. Setting forcearch to use software emulation."
-                 .format(target_arch, host_arch))
+        log.info("Unable to build arch %s natively on arch %s. Setting forcearch to use software emulation.",
+                 target_arch, host_arch)
         config_opts['forcearch'] = target_arch
 
+    if config_opts['forcearch']:
+        binary = '/usr/bin/qemu-x86_64-static'
+        if not os.path.exists(binary):
+            # qemu-user-static is required, but seems to be missing
+            if util.is_host_rh_family():
+                # fail asap on RH systems
+                raise RuntimeError('the --forcearch feature requires the '
+                                   'qemu-user-static.rpm package to be installed')
+            # on other systems we are not sure where the qemu-user-static
+            # binaries are installed.  Notify the user verbosely, but do our
+            # best and continue!
+            log.warning("missing %s mock will likely fail ...", binary)
+            time.sleep(5)
 
 @traceLog()
 def do_debugconfig(config_opts):
@@ -651,6 +676,10 @@ def main():
     state = State()
     plugins = Plugins(config_opts, state)
 
+    # When scrubbing all, we also want to scrub a bootstrap chroot
+    if options.scrub:
+        config_opts['use_bootstrap_container'] = True
+
     # outer buildroot to bootstrap the installation - based on main config with some differences
     bootstrap_buildroot = None
     if config_opts['use_bootstrap_container']:
@@ -662,7 +691,7 @@ def main():
         bootstrap_buildroot_config['root'] = bootstrap_buildroot_config['root'] + '-bootstrap'
         # share a yum cache to save downloading everything twice
         bootstrap_buildroot_config['plugin_conf']['yum_cache_opts']['dir'] = \
-            "%(cache_topdir)s/" + config_opts['root'] + "/%(package_manager)s_cache/"
+            "{{cache_topdir}}/" + config_opts['root'] + "/{{package_manager}}_cache/"
         # we don't want to affect the bootstrap.config['nspawn_args'] array, deep copy
         bootstrap_buildroot_config['nspawn_args'] = config_opts.get('nspawn_args', []).copy()
 
@@ -674,6 +703,9 @@ def main():
         # use system_*_command for bootstrapping
         bootstrap_buildroot_config['yum_command'] = bootstrap_buildroot_config['system_yum_command']
         bootstrap_buildroot_config['dnf_command'] = bootstrap_buildroot_config['system_dnf_command']
+
+        # disable updating bootstrap chroot
+        bootstrap_buildroot_config['update_before_build'] = False
 
         bootstrap_buildroot_state = State(bootstrap=True)
         bootstrap_plugins = Plugins(bootstrap_buildroot_config, bootstrap_buildroot_state)
@@ -703,6 +735,10 @@ def main():
     signal.signal(signal.SIGTERM, partial(handle_signals, buildroot))
     signal.signal(signal.SIGPIPE, partial(handle_signals, buildroot))
     signal.signal(signal.SIGHUP, partial(handle_signals, buildroot))
+
+    # postprocess option arguments for bootstrap
+    if options.mode in ['installdeps', 'install']:
+        args = [buildroot.file_on_cmdline(arg) for arg in args]
 
     log.info("Signal handler active")
     commands = Commands(config_opts, uidManager, plugins, state, buildroot, bootstrap_buildroot)
@@ -743,11 +779,9 @@ def main():
     try:
         result = run_command(options, args, config_opts, commands, buildroot, state)
     finally:
-        buildroot.uid_manager.becomeUser(0, 0)
         buildroot.finalize()
         if bootstrap_buildroot is not None:
             bootstrap_buildroot.finalize()
-        buildroot.uid_manager.restorePrivs()
     return result
 
 

@@ -166,7 +166,7 @@ package and branch can be defined with \fB\-\-scm\-option\fP arguments,
 see site\-defaults.cfg for more information.
 .TP
 \fB\-\-scrub\fR=\fITYPE\fP
-Completely remove the specified chroot or cache dir or all of the chroot and cache.  \fITYPE\fR is one of all, chroot, cache, root\-cache, c\-cache, yum\-cache or dnf\-cache. In fact, dnf\-cache is just alias for yum\-cache, and both remove Dnf and Yum cache.
+Completely remove the specified chroot or cache dir or all of the chroot and cache.  \fITYPE\fR is one of all, chroot, bootstrap, cache, root\-cache, c\-cache, yum\-cache or dnf\-cache. In fact, dnf\-cache is just alias for yum\-cache, and both remove Dnf and Yum cache.
 .TP
 \fB\-\-shell\fP [\fICOMMAND [\fIARGS...]\fR]
 Run the specified command interactively within the chroot (no 'clean' is performed). If no command specified, /bin/sh is run. Note that COMMAND is shell expanded using the shell in chroot. Note that this command does not produce logs.
@@ -258,9 +258,8 @@ Enable networking. If you want to have reproducible builds then your builds shou
 This option overrides config_opts['rpmbuild_networking'] and config_opts['use_host_resolv'], setting both True.
 .TP
 \fB\-\-localrepo\fR=\fIREPO\fR\fR
-Set the path to put the results/repo in. This path needs to be somewhere
-accessible to users other than you for reading as the mock process doesn't run
-as you. Will make a tempdir if not set.
+Set the path to put the results/repo in (works only in \fB\-\-chain\fR mode).
+Will make a tempdir if not set.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Show usage information and exit.
@@ -315,7 +314,7 @@ config linked to by /etc/mock/default.cfg.
 \fB\-\-resultdir\fR=\fIRESULTDIR\fP
 Change directory where resulting files (RPMs and build logs) are written. Resultdir can contain python\-string substitutions for any variable in the chroot config. For example:
 
-\fB\-\-resultdir=./my/"%(dist)s"/"%(target_arch)s"/\fR
+\fB\-\-resultdir=./my/"{{dist}}"/"{{target_arch}}"/\fR
 
 This option enables automatic cleanup, this can be changed in config file (by cleanup_on_success, cleanup_on_failure configuration options) or overridden by \-\-no\-cleanup\-after/\-\-cleanup\-after arguments.
 
@@ -382,6 +381,17 @@ build in two stages, using chroot rpm for creating the build chroot
 .TP
 \fB\-\-no-bootstrap-chroot\fR
 build in a single stage, using system rpm for creating the build chroot
+
+.TP
+\fB\-\-use-bootstrap-image\fR
+Instead of creating a bootstrap chroot from scrath, use podman image specified in
+\fBconfig_opts['bootstrap_image']\fR, extract it, and use it as a cache for the bootstrap chroot.
+This is useful when host \fBrpm\fR version is not compatible with the target system, or when using mock
+on non-RPM distributions.
+
+.TP
+\fB\-\-no-bootstrap-image\fR
+don't create bootstrap chroot from container image
 
 .SH "FILES"
 .LP
@@ -459,7 +469,6 @@ Seth Vidal
 and a cast of...tens
 .SH "SEE ALSO"
 .LP
-mockchain(1),
 rpmbuild(8),
 yum(8),
 dnf(8),

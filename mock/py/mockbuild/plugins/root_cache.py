@@ -150,6 +150,7 @@ class RootCache(object):
                 )
                 for item in self.exclude_dirs:
                     mockbuild.util.mkdirIfAbsent(self.buildroot.make_chroot_path(item))
+
                 self._rootCacheUnlock()
                 self.buildroot.chrootWasCached = True
                 self.state.finish("unpacking root cache")

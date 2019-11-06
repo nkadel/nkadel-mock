@@ -17,10 +17,11 @@ import uuid
 from . import mounts
 from . import uid
 from . import util
-from .exception import BuildRootLocked, Error, ResultDirNotAccessible, RootError
+from .exception import (BuildRootLocked, Error, ResultDirNotAccessible,
+                        RootError, BadCmdline)
 from .package_manager import package_manager
 from .trace_decorator import getLog, traceLog
-
+from .podman import Podman
 
 class Buildroot(object):
     @traceLog()
@@ -60,6 +61,9 @@ class Buildroot(object):
         self.env.update(proxy_env)
         os.environ.update(proxy_env)
 
+        self.use_bootstrap_image = self.config['use_bootstrap_image']
+        self.bootstrap_image = self.config['bootstrap_image']
+
         self.pkg_manager = package_manager(config, self, plugins, bootstrap_buildroot)
         self.mounts = mounts.Mounts(self)
 
@@ -72,6 +76,8 @@ class Buildroot(object):
         self.tmpdir = None
         self.nosync_path = None
         self.final_rpm_list = None
+
+        self._homedir_bindmounts = {}
 
     @traceLog()
     def make_chroot_path(self, *paths):
@@ -129,6 +135,17 @@ class Buildroot(object):
         self.plugins.call_hooks('preinit')
         # intentionally we do not call bootstrap hook here - it does not have sense
         self.chroot_was_initialized = self.chroot_is_initialized()
+        if self.is_bootstrap and self.use_bootstrap_image \
+                and not self.chroot_was_initialized:
+            podman = Podman(self, self.bootstrap_image)
+            podman.pull_image()
+            podman.get_container_id()
+            if self.config["tar"] == "bsdtar":
+                __tar_cmd = "bsdtar"
+            else:
+                __tar_cmd = "gtar"
+            podman.cp(self.make_chroot_path(), __tar_cmd)
+            podman.remove()
 
         self._setup_dirs()
         if do_log:
@@ -261,13 +278,13 @@ class Buildroot(object):
 
         cmd = self.config['chroot_setup_cmd']
         if cmd:
-            if isinstance(cmd, util.basestring):
+            if isinstance(cmd, str):
                 cmd = cmd.split()
             self.pkg_manager.init_install_output += self.pkg_manager.execute(*cmd, returnOutput=1)
 
         if 'chroot_additional_packages' in self.config and self.config['chroot_additional_packages']:
             cmd = self.config['chroot_additional_packages']
-            if isinstance(cmd, util.basestring):
+            if isinstance(cmd, str):
                 cmd = cmd.split()
             cmd = ['install'] + cmd
             self.pkg_manager.init_install_output += self.pkg_manager.execute(*cmd, returnOutput=1)
@@ -287,9 +304,6 @@ class Buildroot(object):
         if not os.path.exists(self.make_chroot_path('usr/sbin/useradd')):
             raise RootError("Could not find useradd in chroot, maybe the install failed?")
 
-        dets = {'uid': str(self.chrootuid), 'gid': str(self.chrootgid),
-                'user': self.chrootuser, 'group': self.chrootgroup, 'home': self.homedir}
-
         excluded = [self.make_chroot_path(self.homedir, path)
                     for path in self.config['exclude_from_homedir_cleanup']] + \
             self.mounts.get_mountpoints()
@@ -298,18 +312,18 @@ class Buildroot(object):
 
         # ok for these two to fail
         if self.config['clean']:
-            self.doChroot(['/usr/sbin/userdel', '-r', '-f', dets['user']],
+            self.doChroot(['/usr/sbin/userdel', '-r', '-f', self.chrootuser],
                           shell=False, raiseExc=False, nosync=True)
         else:
-            self.doChroot(['/usr/sbin/userdel', '-f', dets['user']],
+            self.doChroot(['/usr/sbin/userdel', '-f', self.chrootuser],
                           shell=False, raiseExc=False, nosync=True)
-        self.doChroot(['/usr/sbin/groupdel', dets['group']],
+        self.doChroot(['/usr/sbin/groupdel', self.chrootgroup],
                       shell=False, raiseExc=False, nosync=True)
 
-        if self.chrootgid != 0:
-            self.doChroot(['/usr/sbin/groupadd', '-g', dets['gid'], dets['group']],
+        if self.chrootgid:
+            self.doChroot(['/usr/sbin/groupadd', '-g', self.chrootgid, self.chrootgroup],
                           shell=False, nosync=True)
-        self.doChroot(shlex.split(self.config['useradd'] % dets), shell=False, nosync=True)
+        self.doChroot(shlex.split(self.config['useradd']), shell=False, nosync=True)
         if not self.config['clean']:
             self.uid_manager.changeOwner(self.make_chroot_path(self.homedir))
         self._enable_chrootuser_account()
@@ -340,8 +354,6 @@ class Buildroot(object):
         self.logging_initialized = True
 
         with self.uid_manager:
-            self.uid_manager.becomeUser(0, 0)
-
             util.mkdirIfAbsent(self.resultdir)
             # attach logs to log files.
             # This happens in addition to anything that
@@ -357,7 +369,6 @@ class Buildroot(object):
                 fh.setLevel(logging.NOTSET)
                 log.addHandler(fh)
                 log.info("Mock Version: %s", self.config['version'])
-            self.uid_manager.restorePrivs()
 
     @traceLog()
     def _init_aux_files(self):
@@ -439,6 +450,7 @@ class Buildroot(object):
                 'tmp/ccache',
                 'var/tmp',
                 'etc/dnf',
+                'etc/dnf/vars',
                 'etc/yum.repos.d',
                 'etc/yum',
                 'proc',
@@ -635,6 +647,41 @@ class Buildroot(object):
                 pass
             finally:
                 self._unlock_buildroot()
+
+    @traceLog()
+    def file_on_cmdline(self, filename):
+        """
+        If the bootstrap chroot feature is enabled, and the FILENAME represents
+        a filename (file exists on host), bind-mount it into the bootstrap
+        chroot automatically and return its modified filename (relatively to
+        bootstrap chroot).  But on some places, we still need to access the
+        host's file so we use BindMountedFile() wrapper.
+        """
+        bootstrap = self.bootstrap_buildroot
+        if not bootstrap:
+            return filename
+
+        if not os.path.exists(filename):
+            # probably just '--install pkgname'
+            return filename
+
+        basename = os.path.basename(filename)
+        if basename in self._homedir_bindmounts:
+            raise BadCmdline("File '{0}' can not be bind-mounted to "
+                             "bootstrap chroot twice".format(basename))
+        self._homedir_bindmounts[basename] = 1
+
+        host_filename = os.path.abspath(filename)
+        chroot_filename = os.path.join(
+            bootstrap.homedir, basename,
+        )
+        bind_path = bootstrap.make_chroot_path(chroot_filename)
+        bootstrap.mounts.add_user_mount(mounts.BindMountPoint(
+            srcpath=filename,
+            bindpath=bind_path,
+        ))
+
+        return util.BindMountedFile(chroot_filename, host_filename)
 
     @traceLog()
     def delete(self):
