@@ -9,49 +9,111 @@ import sys
 import time
 from textwrap import dedent
 
+from distutils.dir_util import copy_tree
 import distro
 # pylint: disable=redefined-builtin
 from six.moves import input
 
 from . import util
 from .exception import BuildError, Error, YumError
-from .trace_decorator import traceLog
+from .trace_decorator import traceLog, getLog
+
+fallbacks = {
+    'dnf': ['dnf', 'yum'],
+    'yum': ['yum', 'dnf'],
+    'microdnf': ['microdnf', 'dnf', 'yum'],
+}
+
+
+def package_manager_from_string(name):
+    if name == 'yum':
+        return Yum
+    if name == 'dnf':
+        return Dnf
+    if name == 'microdnf':
+        return MicroDnf
+    raise Exception('Unrecognized package manager "{}"', name)
+
+
+def package_manager_exists_on_host(name, config_opts):
+    option = '{}_command'.format(name)
+    pathname = config_opts[option]
+    if not os.path.isfile(pathname):
+        if pathname == '/usr/bin/yum':
+            # only _exact_ match here, with custom config like
+            # /usr/local/bin/yum user must know where yum is
+            if os.path.isfile('/usr/bin/yum-deprecated'):
+                return True
+        return False
+    real_pathname = os.path.realpath(pathname)
+    # resolve symlinks, and detect that e.g. /bin/yum doesn't point to /bin/dnf
+    if name not in real_pathname:
+        getLog().warning("Not using '%s', it is symlink to '%s'", pathname,
+                         real_pathname)
+        return False
+    return True
+
+
+def package_manager_class_fallback(desired, config_opts, bootstrap):
+    getLog().debug("search for '%s' package manager", desired)
+    if desired not in fallbacks:
+        raise Exception('Unexpected package manager "{}"', desired)
+
+    for manager in fallbacks[desired]:
+        if package_manager_exists_on_host(manager, config_opts):
+            ret_val = package_manager_from_string(manager)
+            if desired == manager:
+                return ret_val
+
+            getLog().info("Using '%s' instead of '%s'%s", manager, desired,
+                          " for bootstrap chroot" if bootstrap else "")
+
+            if 'dnf_warning' in config_opts and not config_opts['dnf_warning']:
+                return ret_val
+
+            if not bootstrap:
+                print("""WARNING! WARNING! WARNING!
+You are building package for distribution which uses {0}. However your system
+does not support {0}. You can continue with {1}, which will likely succeed,
+but the installed chroot may look a little different.
+  1. Please consider --bootstrap-chroot option, or
+  2. install {0} on your host system.
+You can suppress this warning when you put
+  config_opts['dnf_warning'] = False
+in Mock config.""".format(desired.upper(), manager.upper()))
+                input("Press Enter to continue.")
+
+            return ret_val
+
+    raise Exception("No package from {} found".format(fallbacks[desired]))
+
+
+def package_manager_class(config_opts, buildroot, bootstrap_buildroot=None):
+    pm = config_opts.get('package_manager', 'dnf')
+
+    if buildroot.is_bootstrap:
+        # pkgmanager _to install_ bootstrap.  we don't care about the package
+        # manager too much, so we tolerate cross-pkgmanager installation here
+        return package_manager_class_fallback(pm, config_opts, True)
+
+    if bootstrap_buildroot:
+        # Installing from bootstrap to destination buildroot, we expect that the
+        # desired pkg manager is installed and there's need to warn and do
+        # fallbacks.
+        return package_manager_from_string(pm)
+
+    # installing from host directly to destination buildroot, this may fail
+    # miserably (especially if pm=dnf, and only yum is available).
+    return package_manager_class_fallback(pm, config_opts, False)
+
 
 def package_manager(config_opts, buildroot, plugins, bootstrap_buildroot=None):
-    pm = config_opts.get('package_manager', 'yum')
     is_bootstrap_image = False
     if buildroot.is_bootstrap and buildroot.use_bootstrap_image:
         is_bootstrap_image = True
-    if pm == 'yum':
-        return Yum(config_opts, buildroot, plugins, bootstrap_buildroot, is_bootstrap_image)
-    elif pm == 'dnf':
-        if os.path.isfile(config_opts['dnf_command']) or bootstrap_buildroot is not None:
-            return Dnf(config_opts, buildroot, plugins, bootstrap_buildroot, is_bootstrap_image)
-        # RHEL without DNF and without bootstrap buildroot
-        (distribution, version) = distro.linux_distribution(full_distribution_name=False)[0:2]
-        if distribution in util.RHEL_CLONES:
-            version = int(version.split('.')[0])
-            if version < 8:
-                if ('dnf_warning' not in config_opts or config_opts['dnf_warning']) and \
-                        not config_opts['use_bootstrap_container']:
-                    print("""WARNING! WARNING! WARNING!
-You are building package for distribution which use DNF. However your system
-does not support DNF. You can continue with YUM, which will likely succeed,
-but the result may be little different.
-You can suppress this warning when you put
-  config_opts['dnf_warning'] = False
-in Mock config.""")
-                    input("Press Enter to continue.")
-                return Yum(config_opts, buildroot, plugins, bootstrap_buildroot, is_bootstrap_image)
-        # something else then EL, and no dnf_command exist
-        # This will likely mean some error later.
-        # Either user is smart or let him shot in his foot.
-        return Dnf(config_opts, buildroot, plugins, bootstrap_buildroot, is_bootstrap_image)
-    elif pm == 'microdnf':
-        return MicroDnf(config_opts, buildroot, plugins, bootstrap_buildroot, is_bootstrap_image)
-    else:
-        # TODO specific exception type
-        raise Exception('Unrecognized package manager')
+    cls = package_manager_class(config_opts, buildroot, bootstrap_buildroot)
+    return cls(config_opts, buildroot, plugins, bootstrap_buildroot,
+               is_bootstrap_image)
 
 
 class _PackageManager(object):
@@ -206,13 +268,14 @@ Error:      Neither dnf-utils nor yum-utils are installed. Dnf-utils or yum-util
 
     @traceLog()
     def copy_distribution_gpg_keys(self):
-        # The bootstrap image frequently lacks distribution-gpg-keys.
         # Copy the files from the host to avoid invoking package manager
         # or rebuilding the cached bootstrap chroot.
         keys_path = "/usr/share/distribution-gpg-keys"
         dest_path = os.path.dirname(keys_path)
+        chroot_path = self.buildroot.make_chroot_path(dest_path)
+        util.mkdirIfAbsent(chroot_path)
         self.buildroot.root_log.debug("Copying %s to the bootstrap chroot" % keys_path)
-        cmd = ["cp", "-a", keys_path, self.buildroot.make_chroot_path(dest_path)]
+        cmd = ["cp", "-a", keys_path, chroot_path]
         util.do(cmd)
 
     @traceLog()
@@ -222,8 +285,15 @@ Error:      Neither dnf-utils nor yum-utils are installed. Dnf-utils or yum-util
         for pki_file in glob.glob("/etc/pki/mock/RPM-GPG-KEY-*"):
             shutil.copy(pki_file, pki_dir)
 
+    @traceLog()
+    def copy_certs(self):
+        cert_path = "/etc/pki/ca-trust/extracted"
+        pki_dir = self.buildroot.make_chroot_path(cert_path)
+        copy_tree(cert_path, pki_dir)
+
     def initialize(self):
         self.copy_gpg_keys()
+        self.copy_certs()
         if self.buildroot.is_bootstrap:
             self.copy_distribution_gpg_keys()
         self.initialize_config()
@@ -259,9 +329,6 @@ class Yum(_PackageManager):
         self.command = config['yum_command']
         self.install_command = config['yum_install_command']
         self.builddep_command = [config['yum_builddep_command']]
-        # the command in bootstrap may not exists yet
-        if bootstrap_buildroot is None:
-            self._check_command()
         if bootstrap_buildroot is not None:
             # we are in bootstrap so use old names
             self.command = '/usr/bin/yum'
@@ -283,6 +350,9 @@ class Yum(_PackageManager):
                     '--config', self.buildroot.make_chroot_path('etc', 'yum', 'yum.conf')]
             if os.path.exists(yum_builddep_deprecated_path):
                 self.builddep_command = ['/usr/bin/yum-builddep-deprecated']
+        # the command in bootstrap may not exists yet
+        if bootstrap_buildroot is None:
+            self._check_command()
 
     @traceLog()
     def _write_plugin_conf(self, name):

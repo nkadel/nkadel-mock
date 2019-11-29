@@ -17,7 +17,7 @@ import tempfile
 import requests
 import rpm
 from six.moves.urllib_parse import urlsplit
-from mockbuild.mounts import BindMountPoint
+from mockbuild.mounts import BindMountPoint, FileSystemMountPoint
 
 from . import util
 from .exception import PkgError, Error, RootError
@@ -91,8 +91,6 @@ class Commands(object):
             self.backup_results()
         self.state.start("clean chroot")
         self.buildroot.delete()
-        if self.bootstrap_buildroot is not None:
-            self.bootstrap_buildroot.delete()
         self.state.finish("clean chroot")
 
     @traceLog()
@@ -160,8 +158,15 @@ class Commands(object):
                 inner_mount = self.bootstrap_buildroot.make_chroot_path(self.buildroot.make_chroot_path())
                 util.mkdirIfAbsent(self.buildroot.make_chroot_path())
                 self.bootstrap_buildroot.initialize(**kwargs)
+                # Hide re-mounted chroot from host by rprivate tmpfs.
                 self.buildroot.mounts.managed_mounts.append(
-                    BindMountPoint(self.buildroot.make_chroot_path(), inner_mount))
+                    FileSystemMountPoint(filetype='tmpfs',
+                                         device='hide_root_in_bootstrap',
+                                         path=inner_mount,
+                                         options="rprivate"))
+                self.buildroot.mounts.managed_mounts.append(
+                    BindMountPoint(self.buildroot.make_chroot_path(), inner_mount,
+                                   recursive=True))
             self.buildroot.initialize(**kwargs)
             if not self.buildroot.chroot_was_initialized:
                 self._show_installed_packages()
@@ -566,16 +571,16 @@ class Commands(object):
             # copy spec/sources
             shutil.copy(spec, self.buildroot.make_chroot_path(self.buildroot.builddir, "SPECS"))
 
-            # Resolve any symlinks
-            sources = os.path.realpath(sources)
-
-            if os.path.isdir(sources):
-                util.rmtree(self.buildroot.make_chroot_path(self.buildroot.builddir, "SOURCES"))
-                shutil.copytree(sources,
-                                self.buildroot.make_chroot_path(self.buildroot.builddir, "SOURCES"),
-                                symlinks=(not follow_links))
-            else:
-                shutil.copy(sources, self.buildroot.make_chroot_path(self.buildroot.builddir, "SOURCES"))
+            if sources:
+                # Resolve any symlinks
+                sources = os.path.realpath(sources)
+                if os.path.isdir(sources):
+                    util.rmtree(self.buildroot.make_chroot_path(self.buildroot.builddir, "SOURCES"))
+                    shutil.copytree(sources,
+                                    self.buildroot.make_chroot_path(self.buildroot.builddir, "SOURCES"),
+                                    symlinks=(not follow_links))
+                else:
+                    shutil.copy(sources, self.buildroot.make_chroot_path(self.buildroot.builddir, "SOURCES"))
 
             spec = self.buildroot.make_chroot_path(self.buildroot.builddir, "SPECS", os.path.basename(spec))
             # get rid of rootdir prefix

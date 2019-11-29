@@ -23,6 +23,16 @@ from .package_manager import package_manager
 from .trace_decorator import getLog, traceLog
 from .podman import Podman
 
+
+def noop_in_bootstrap(f):
+    def wrapper(self, *args, **kwargs):
+        if self.is_bootstrap:
+            getLog().debug("method {} skipped in bootstrap".format(f.__name__))
+            return
+        return f(self, *args, **kwargs)
+    return wrapper
+
+
 class Buildroot(object):
     @traceLog()
     def __init__(self, config, uid_manager, state, plugins, bootstrap_buildroot=None, is_bootstrap=False):
@@ -135,8 +145,7 @@ class Buildroot(object):
         self.plugins.call_hooks('preinit')
         # intentionally we do not call bootstrap hook here - it does not have sense
         self.chroot_was_initialized = self.chroot_is_initialized()
-        if self.is_bootstrap and self.use_bootstrap_image \
-                and not self.chroot_was_initialized:
+        if self.uses_bootstrap_image and not self.chroot_was_initialized:
             podman = Podman(self, self.bootstrap_image)
             podman.pull_image()
             podman.get_container_id()
@@ -144,6 +153,7 @@ class Buildroot(object):
                 __tar_cmd = "bsdtar"
             else:
                 __tar_cmd = "gtar"
+            podman.install_pkgmgmt_packages()
             podman.cp(self.make_chroot_path(), __tar_cmd)
             podman.remove()
 
@@ -219,10 +229,13 @@ class Buildroot(object):
             if 'user' not in kargs:
                 kargs['gid'] = pwd.getpwuid(kargs['uid'])[0]
             self.uid_manager.becomeUser(0, 0)
-        result = util.do_with_status(command, chrootPath=self.make_chroot_path(),
-                                     env=env, *args, **kargs)
-        if util.USE_NSPAWN:
-            self.uid_manager.restorePrivs()
+
+        try:
+            result = util.do_with_status(command, chrootPath=self.make_chroot_path(),
+                                         env=env, *args, **kargs)
+        finally:
+            if util.USE_NSPAWN:
+                self.uid_manager.restorePrivs()
         return result
 
     def all_chroot_packages(self):
@@ -267,6 +280,12 @@ class Buildroot(object):
 
     @traceLog()
     def _init_pkg_management(self):
+        if self.uses_bootstrap_image:
+            # we already 'Podman.install_pkgmgmt_packages' to have working
+            # pkg management stack in bootstrap (the rest of this method, like
+            # modules, isn't usefull in bootstrap)
+            return
+
         update_state = '{0} install'.format(self.pkg_manager.name)
         self.state.start(update_state)
         if 'module_enable' in self.config and self.config['module_enable']:
@@ -292,6 +311,7 @@ class Buildroot(object):
         self.state.finish(update_state)
 
     @traceLog()
+    @noop_in_bootstrap
     def _fixup_build_user(self):
         """ensure chrootuser has correct UID"""
         # --non-unique can be removed after 2019-03-31 (EOL of SLES 11)
@@ -300,6 +320,7 @@ class Buildroot(object):
                       shell=False, nosync=True)
 
     @traceLog()
+    @noop_in_bootstrap
     def _make_build_user(self):
         if not os.path.exists(self.make_chroot_path('usr/sbin/useradd')):
             raise RootError("Could not find useradd in chroot, maybe the install failed?")
@@ -444,6 +465,7 @@ class Buildroot(object):
                 'var/lib/yum',
                 'var/lib/dbus',
                 'var/log',
+                'var/cache/dnf',
                 'var/cache/yum',
                 'etc/rpm',
                 'tmp',
@@ -469,6 +491,7 @@ class Buildroot(object):
     def _setup_build_dirs(self):
         build_dirs = ['RPMS', 'SPECS', 'SRPMS', 'SOURCES', 'BUILD', 'BUILDROOT',
                       'originals']
+        util.mkdirIfAbsent(self.make_chroot_path(self.builddir))
         with self.uid_manager:
             self.uid_manager.changeOwner(self.make_chroot_path(self.builddir))
             for item in build_dirs:
@@ -705,3 +728,7 @@ class Buildroot(object):
         self.chroot_was_initialized = False
         self.plugins.call_hooks('postclean')
         # intentionally we do not call bootstrap hook here - it does not have sense
+
+    @property
+    def uses_bootstrap_image(self):
+        return self.is_bootstrap and self.use_bootstrap_image

@@ -155,8 +155,15 @@ class TemplatedDictionary(MutableMapping):
         else:
             return value
     def __render_string(self, value):
-        template = jinja2.Template(value)
-        return _to_native(template.render(self.__dict__))
+        orig = last = value
+        max_recursion = self.__dict__.get('jinja_max_recursion', 5)
+        for _ in range(max_recursion):
+            template = jinja2.Template(value)
+            value = _to_native(template.render(self.__dict__))
+            if value == last:
+                return value
+            last = value
+        raise ValueError("too deep jinja re-evaluation on '{}'".format(orig))
 
 
 #def _to_bytes(obj, arg_encoding='utf-8', errors='strict', nonstring='strict'):
@@ -509,7 +516,7 @@ def process_input(line):
 
 
 def logOutput(fdout, fderr, logger, returnOutput=1, start=0, timeout=0, printOutput=False,
-              child=None, chrootPath=None, pty=False):
+              child=None, chrootPath=None, pty=False, returnStderr=True):
     output = ""
     done = False
     fds = [fdout, fderr]
@@ -559,6 +566,10 @@ def logOutput(fdout, fderr, logger, returnOutput=1, start=0, timeout=0, printOut
                     else:
                         print(raw, end='')
                     sys.stdout.flush()
+
+                if returnStderr is False and s == fderr:
+                    continue
+
                 txt_input = raw.decode(encoding, 'replace')
                 lines = txt_input.split("\n")
                 if tail:
@@ -648,7 +659,7 @@ def do(*args, **kargs):
 def do_with_status(command, shell=False, chrootPath=None, cwd=None, timeout=0, raiseExc=True,
                    returnOutput=0, uid=None, gid=None, user=None, personality=None,
                    printOutput=False, env=None, pty=False, nspawn_args=None, unshare_net=False,
-                   *_, **kargs):
+                   returnStderr=True, *_, **kargs):
     logger = kargs.get("logger", getLog())
     if timeout == 0:
         timeout = _OPS_TIMEOUT
@@ -663,7 +674,11 @@ def do_with_status(command, shell=False, chrootPath=None, cwd=None, timeout=0, r
     if env is None:
         env = clean_env()
     stdout = None
-    command = [str(x) for x in command]
+
+    if isinstance(command, list):
+        # convert int args to strings
+        command = [str(x) for x in command]
+
     try:
         child = None
         if shell and isinstance(command, list):
@@ -693,7 +708,7 @@ def do_with_status(command, shell=False, chrootPath=None, cwd=None, timeout=0, r
                     reader if pty else child.stdout, child.stderr,
                     logger, returnOutput, start, timeout, pty=pty,
                     printOutput=printOutput, child=child,
-                    chrootPath=chrootPath)
+                    chrootPath=chrootPath, returnStderr=returnStderr)
     except:
         # kill children if they arent done
         if child is not None and child.returncode is None:
@@ -911,6 +926,7 @@ def find_non_nfs_dir():
 def setup_default_config_opts(unprivUid, version, pkgpythondir):
     "sets up default configuration."
     config_opts = TemplatedDictionary()
+    config_opts['config_paths'] = []
     config_opts['version'] = version
     config_opts['basedir'] = '/var/lib/mock'  # root name is automatically added to this
     config_opts['resultdir'] = '{{basedir}}/{{root}}/result'
@@ -979,8 +995,6 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
         'yum_cache_opts': {
             'max_age_days': 30,
             'max_metadata_age_days': 30,
-            'dir': "{{cache_topdir}}/{{root}}/{{package_manager}}_cache/",
-            'target_dir': "/var/cache/{{package_manager}}/",
             'online': True},
         'root_cache_enable': True,
         'root_cache_opts': {
@@ -1136,15 +1150,15 @@ def setup_default_config_opts(unprivUid, version, pkgpythondir):
     # configurable commands executables
     config_opts['yum_command'] = '/usr/bin/yum'
     config_opts['system_yum_command'] = '/usr/bin/yum'
-    config_opts['yum_install_command'] = 'install yum yum-utils shadow-utils distribution-gpg-keys'
+    config_opts['yum_install_command'] = 'install yum yum-utils'
     config_opts['yum_builddep_command'] = '/usr/bin/yum-builddep'
     config_opts['dnf_command'] = '/usr/bin/dnf'
     config_opts['system_dnf_command'] = '/usr/bin/dnf'
-    config_opts['dnf_install_command'] = 'install dnf dnf-plugins-core shadow-utils distribution-gpg-keys'
+    config_opts['dnf_install_command'] = 'install dnf dnf-plugins-core'
     config_opts['microdnf_command'] = '/usr/bin/microdnf'
     # "dnf-install" is special keyword which tells mock to use install but with DNF
     config_opts['microdnf_install_command'] = \
-        'dnf-install microdnf dnf dnf-plugins-core shadow-utils distribution-gpg-keys'
+        'dnf-install microdnf dnf dnf-plugins-core'
     config_opts['microdnf_builddep_command'] = '/usr/bin/dnf'
     config_opts['microdnf_builddep_opts'] = []
     config_opts['microdnf_common_opts'] = []
@@ -1360,9 +1374,12 @@ def check_config(config_opts):
 
 
 @traceLog()
-def include(config_file, config_opts, is_statement=False):
+def include(config_file, config_opts):
+    if not os.path.isabs(config_file):
+        config_file = os.path.join(config_opts['config_path'], config_file)
+
     if os.path.exists(config_file):
-        if is_statement and config_file in config_opts['config_paths']:
+        if config_file in config_opts['config_paths']:
             getLog().warning("Multiple inclusion of %s, skipping" % config_file)
             return
 
@@ -1370,7 +1387,7 @@ def include(config_file, config_opts, is_statement=False):
 
         with open(config_file) as f:
             content = f.read()
-            content = re.sub(r'include\((.*)\)', r'include(\g<1>, config_opts, True)', content)
+            content = re.sub(r'include\((.*)\)', r'include(\g<1>, config_opts)', content)
             code = compile(content, config_file, 'exec')
         # pylint: disable=exec-used
         exec(code)
@@ -1426,7 +1443,6 @@ def setup_operations_timeout(config_opts):
 def do_update_config(log, config_opts, cfg, uidManager, name, skipError=True):
     if os.path.exists(cfg):
         log.info("Reading configuration from %s", cfg)
-        config_opts['config_paths'].append(cfg)
         update_config_from_file(config_opts, cfg, uidManager)
         setup_operations_timeout(config_opts)
         check_macro_definition(config_opts)
@@ -1483,7 +1499,7 @@ def load_config(config_path, name, uidManager, version, pkg_python_dir):
     config_opts = setup_default_config_opts(gid, version, pkg_python_dir)
 
     # array to save config paths
-    config_opts['config_paths'] = []
+    config_opts['config_path'] = config_path
     config_opts['chroot_name'] = name
 
     # Read in the config files: default, and then user specified

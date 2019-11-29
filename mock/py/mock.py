@@ -57,6 +57,7 @@ import pwd
 import shutil
 import sys
 import time
+import copy
 
 # pylint: disable=import-error
 from functools import partial
@@ -400,7 +401,7 @@ def command_parse():
             raise mockbuild.exception.BadCmdline("--target option accepts only "
                                                  "one arch. Invalid: %s" % options.rpmbuild_arch)
 
-    if options.mode == 'buildsrpm' and not (options.spec and options.sources):
+    if options.mode == 'buildsrpm' and not (options.spec):
         if not options.scm:
             raise mockbuild.exception.BadCmdline("Must specify both --spec and "
                                                  "--sources with --buildsrpm")
@@ -635,7 +636,6 @@ def main():
         config_path = options.configdir
 
     config_opts = util.load_config(config_path, options.chroot, uidManager, __VERSION__, PKGPYTHONDIR)
-    config_opts['config_path'] = config_path
 
     # cmdline options override config options
     util.set_config_opts_per_cmdline(config_opts, options, args)
@@ -686,12 +686,13 @@ def main():
         # first take a copy of the config so we can make some modifications
         bootstrap_buildroot_config = config_opts.copy()
         # copy plugins configuration so we get a separate deep copy
-        bootstrap_buildroot_config['plugin_conf'] = config_opts['plugin_conf'].copy() # pylint: disable=no-member
+        bootstrap_buildroot_config['plugin_conf'] = \
+            copy.deepcopy(config_opts['plugin_conf'])  # pylint: disable=no-member
         # add '-bootstrap' to the end of the root name
         bootstrap_buildroot_config['root'] = bootstrap_buildroot_config['root'] + '-bootstrap'
-        # share a yum cache to save downloading everything twice
-        bootstrap_buildroot_config['plugin_conf']['yum_cache_opts']['dir'] = \
-            "{{cache_topdir}}/" + config_opts['root'] + "/{{package_manager}}_cache/"
+        # don't share root cache tarball
+        bootstrap_buildroot_config['plugin_conf']['root_cache_opts']['dir'] = \
+            "{{cache_topdir}}/" + bootstrap_buildroot_config['root'] + "/root_cache/"
         # we don't want to affect the bootstrap.config['nspawn_args'] array, deep copy
         bootstrap_buildroot_config['nspawn_args'] = config_opts.get('nspawn_args', []).copy()
 
