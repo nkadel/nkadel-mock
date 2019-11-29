@@ -11,27 +11,33 @@ URL:        https://github.com/rpm-software-management/mock/
 # Source is created by
 # git clone https://github.com/rpm-software-management/mock.git
 # cd mock/mock-core-configs
-# git reset --hard %{name}-%{version}
+# git reset --hard %%{name}-%%{version}
 # tito build --tgz
 Source:     https://github.com/rpm-software-management/mock/releases/download/%{name}-%{version}-1/%{name}-%{version}.tar.gz
 BuildArch:  noarch
 
+%if 0%{?rhel}
+BuildRequires: epel-rpm-macros
+Requires: podman
+%endif
+
 # distribution-gpg-keys contains GPG keys used by mock configs
 Requires:   distribution-gpg-keys >= 1.29
+# mock before 1.4.18 does not support 'protected_packages'
+Conflicts:  mock < 1.4.18
 
 Requires(post): coreutils
-%if 0%{?fedora} || 0%{?mageia} || 0%{?rhel} > 7
+%if 0%{?fedora} || 0%{?mageia} || 0%{?rhel}
 # to detect correct default.cfg
-Requires(post): python3-dnf
-Requires(post): python3-hawkey
+Requires(post): python%{python3_pkgversion}-dnf
+Requires(post): python%{python3_pkgversion}-hawkey
 Requires(post): system-release
-Requires(post): python3
+Requires(post): python%{python3_pkgversion}
 Requires(post): sed
 %endif
 Requires(pre):  shadow-utils
 %if 0%{?rhel} && 0%{?rhel} <= 7
 # to detect correct default.cfg
-Requires(post): python
 Requires(post): yum
 Requires(post): /etc/os-release
 %endif
@@ -59,16 +65,24 @@ grep -rl "config_opts\['package_manager'\] = 'dnf'" etc/mock | \
 done
 %endif # rhel && rhel < 8
 
+%if 0%{?rhel} > 0
+# Required for zstd anabled fedora-31 files
+# config_opts['use_bootstrap_container'] = True
+# config_opts['use_bootstrap_image'] = True
+find etc/mock/ -name fedora-31.tpl | while read name; do
+    sed -i.bak "s/config_opts\['package_manager'\] = 'dnf'/config_opts\['package_manager'\] = 'dnf'\n# Enable bootstrap image for zstd on %%rhel: %{rhel}\nconfig_opts\[\'use_bootstrap_container\'\] = True\nconfig_opts\[\'use_bootstrap_image\'\] = True\n\n/g" $name
+done
+%endif
+
+
 
 %install
 mkdir -p %{buildroot}%{_sysusersdir}
-
-mkdir -p %{buildroot}%{_sysconfdir}/mock/eol/templates
+mkdir -p %{buildroot}%{_sysconfdir}/mock/eol
 mkdir -p %{buildroot}%{_sysconfdir}/mock/templates
 cp -a etc/mock/*.cfg %{buildroot}%{_sysconfdir}/mock
 cp -a etc/mock/templates/*.tpl %{buildroot}%{_sysconfdir}/mock/templates
 cp -a etc/mock/eol/*cfg %{buildroot}%{_sysconfdir}/mock/eol
-cp -a etc/mock/eol/templates/*.tpl %{buildroot}%{_sysconfdir}/mock/eol/templates
 
 # generate files section with config - there is many of them
 echo "%defattr(0644, root, mock)" > %{name}.cfgs
@@ -107,14 +121,14 @@ else
     # something obsure, use buildtime version
     ver=%{?rhel}%{?fedora}%{?mageia}
 fi
-%if 0%{?fedora} || 0%{?mageia} || 0%{?rhel} > 7
+%if 0%{?fedora} || 0%{?mageia} || 0%{?rhel}
 if [ -s /etc/mageia-release ]; then
     mock_arch=$(sed -n '/^$/!{$ s/.* \(\w*\)$/\1/p}' /etc/mageia-release)
 else
-    mock_arch=$(python3 -c "import dnf.rpm; import hawkey; print(dnf.rpm.basearch(hawkey.detect_arch()))")
+    mock_arch=$(%{__python3} -c "import dnf.rpm; import hawkey; print(dnf.rpm.basearch(hawkey.detect_arch()))")
 fi
 %else
-mock_arch=$(python -c "import rpmUtils.arch; baseArch = rpmUtils.arch.getBaseArch(); print baseArch")
+mock_arch=$(%{__python} -c "import rpmUtils.arch; baseArch = rpmUtils.arch.getBaseArch(); print baseArch")
 %endif
 cfg=%{?fedora:fedora}%{?rhel:epel}%{?mageia:mageia}-$ver-${mock_arch}.cfg
 if [ -e %{_sysconfdir}/mock/$cfg ]; then
@@ -288,5 +302,3 @@ fi
 
 * Thu Sep 07 2017 Miroslav Suchý <msuchy@redhat.com> 27.1-1
 - Split from Mock package.
-
-
