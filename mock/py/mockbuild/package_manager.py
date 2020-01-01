@@ -10,9 +10,6 @@ import time
 from textwrap import dedent
 
 from distutils.dir_util import copy_tree
-import distro
-# pylint: disable=redefined-builtin
-from six.moves import input
 
 from . import util
 from .exception import BuildError, Error, YumError
@@ -32,7 +29,7 @@ def package_manager_from_string(name):
         return Dnf
     if name == 'microdnf':
         return MicroDnf
-    raise Exception('Unrecognized package manager "{}"', name)
+    raise Exception('Unrecognized package manager "{}"'.format(name))
 
 
 def package_manager_exists_on_host(name, config_opts):
@@ -57,7 +54,7 @@ def package_manager_exists_on_host(name, config_opts):
 def package_manager_class_fallback(desired, config_opts, bootstrap):
     getLog().debug("search for '%s' package manager", desired)
     if desired not in fallbacks:
-        raise Exception('Unexpected package manager "{}"', desired)
+        raise Exception('Unexpected package manager "{}"'.format(desired))
 
     for manager in fallbacks[desired]:
         if package_manager_exists_on_host(manager, config_opts):
@@ -89,7 +86,7 @@ in Mock config.""".format(desired.upper(), manager.upper()))
 
 
 def package_manager_class(config_opts, buildroot, bootstrap_buildroot=None):
-    pm = config_opts.get('package_manager', 'dnf')
+    pm = config_opts['package_manager']
 
     if buildroot.is_bootstrap:
         # pkgmanager _to install_ bootstrap.  we don't care about the package

@@ -41,6 +41,7 @@ usage:
 """
 
 # library imports
+import configparser
 import errno
 import glob
 import grp
@@ -61,7 +62,6 @@ import copy
 
 # pylint: disable=import-error
 from functools import partial
-from six.moves import configparser
 from mockbuild import util
 from mockbuild.mounts import BindMountPoint
 
@@ -317,10 +317,12 @@ def command_parse():
                       callback=repo_callback)
     parser.add_option("--old-chroot", action="store_true", dest="old_chroot",
                       default=False,
-                      help="use old chroot instead of systemd-nspawn.")
+                      help="Obsoleted. Use --isolation=simple")
     parser.add_option("--new-chroot", action="store_true", dest="new_chroot",
                       default=False,
-                      help="use new chroot (systemd-nspawn).")
+                      help="Obsoleted. Use --isolation=nspawn")
+    parser.add_option("--isolation", action="store", dest="isolation",
+                      help="what level of isolation to use. Valid option: simple, nspawn")
     parser.add_option("--enable-network", action="store_true", dest="enable_network",
                       default=False,
                       help="enable networking.")
@@ -380,7 +382,8 @@ def command_parse():
                       help="build in a single stage, using system rpm for creating the build chroot")
 
     parser.add_option('--use-bootstrap-image', dest='usebootstrapimage', action='store_true',
-                      help="create bootstrap chroot from container image")
+                      help="create bootstrap chroot from container image (turns "
+                           "--bootstrap-chroot on)")
     parser.add_option('--no-bootstrap-image', dest='usebootstrapimage', action='store_false',
                       help="don't create bootstrap chroot from container image")
 
@@ -536,10 +539,20 @@ def check_arch_combination(target_arch, config_opts):
             time.sleep(5)
 
 @traceLog()
-def do_debugconfig(config_opts):
+def do_debugconfig(config_opts, uidManager):
+    jinja_expand = config_opts['__jinja_expand']
+    defaults = util.load_defaults(uidManager, __VERSION__, PKGPYTHONDIR)
+    defaults['__jinja_expand'] = False
+    config_opts['__jinja_expand'] = False
     for key in sorted(config_opts):
-        print("config_opts['{}'] = {}".format(key, pformat(config_opts[key])))
-
+        if key == '__jinja_expand':
+            value = jinja_expand
+        else:
+            value = config_opts[key]
+        if (key in defaults) and (key in config_opts) and (config_opts[key] != defaults[key]) or \
+           (key not in defaults):
+            print("config_opts['{}'] = {}".format(key, pformat(value)))
+    config_opts['__jinja_expand'] = jinja_expand
 
 @traceLog()
 def rootcheck():
@@ -640,12 +653,7 @@ def main():
     # cmdline options override config options
     util.set_config_opts_per_cmdline(config_opts, options, args)
 
-    # setup 'redhat_subscription_key_id' option before enabling jinja
     util.subscription_redhat_init(config_opts)
-
-    # Now when all options are correctly loaded from config files and program
-    # options, turn the jinja templating ON.
-    config_opts['__jinja_expand'] = True
 
     # allow a different mock group to be specified
     if config_opts['chrootgid'] != mockgid:
@@ -886,7 +894,7 @@ def run_command(options, args, config_opts, commands, buildroot, state):
         mockbuild.rebuild.do_buildsrpm(config_opts, commands, buildroot, options, args)
 
     elif options.mode == 'debugconfig':
-        do_debugconfig(config_opts)
+        do_debugconfig(config_opts, buildroot.uid_manager)
 
     elif options.mode == 'orphanskill':
         util.orphansKill(buildroot.make_chroot_path())

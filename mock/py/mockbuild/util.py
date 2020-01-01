@@ -39,7 +39,6 @@ import uuid
 
 import distro
 import jinja2
-import six
 
 from mockbuild.mounts import BindMountPoint
 
@@ -118,7 +117,7 @@ class TemplatedDictionary(MutableMapping):
     def __setitem__(self, key, value):
         self.__dict__[key] = value
     def __getitem__(self, key):
-        if '__jinja_expand' in self.__dict__:
+        if '__jinja_expand' in self.__dict__ and self.__dict__['__jinja_expand']:
             return self.__render_value(self.__dict__[key])
         return self.__dict__[key]
     def __delitem__(self, key):
@@ -166,20 +165,10 @@ class TemplatedDictionary(MutableMapping):
         raise ValueError("too deep jinja re-evaluation on '{}'".format(orig))
 
 
-#def _to_bytes(obj, arg_encoding='utf-8', errors='strict', nonstring='strict'):
-#    if isinstance(obj, six.binary_type):
-#        return obj
-#    elif isinstance(obj, six.text_type):
-#        return obj.encode(arg_encoding, errors)
-#    else:
-#        if nonstring == 'strict':
-#            raise TypeError('First argument must be a string')
-#        raise ValueError('nonstring must be one of: ["strict",]')
-
 def _to_text(obj, arg_encoding='utf-8', errors='strict', nonstring='strict'):
-    if isinstance(obj, six.text_type):
+    if isinstance(obj, str):
         return obj
-    elif isinstance(obj, six.binary_type):
+    elif isinstance(obj, bytes):
         return obj.decode(arg_encoding, errors)
     else:
         if nonstring == 'strict':
@@ -1267,6 +1256,8 @@ def set_config_opts_per_cmdline(config_opts, options, args):
         config_opts['use_bootstrap_container'] = options.bootstrapchroot
     if options.usebootstrapimage is not None:
         config_opts['use_bootstrap_image'] = options.usebootstrapimage
+        if options.usebootstrapimage:
+            config_opts['use_bootstrap_container'] = True
 
     for i in options.disabled_plugins:
         if i not in config_opts['plugins']:
@@ -1300,10 +1291,22 @@ def set_config_opts_per_cmdline(config_opts, options, args):
 
     global USE_NSPAWN
     USE_NSPAWN = config_opts['use_nspawn']
+    log = logging.getLogger()
     if options.old_chroot:
         USE_NSPAWN = False
+        log.error('Option --old-chroot has been deprecated. Use --isolation=simple instead.')
     if options.new_chroot:
         USE_NSPAWN = True
+        log.error('Option --new-chroot has been deprecated. Use --isolation=nspawn instead.')
+
+    if options.isolation is not None:
+        if options.isolation == 'simple':
+            USE_NSPAWN = False
+        elif options.isolation == 'nspawn':
+            USE_NSPAWN = True
+        else:
+            raise exception.BadCmdline("Bad option for '--isolation'. Unknown value: %s"
+                                       % (options.isolation))
 
     if options.enable_network:
         config_opts['rpmbuild_networking'] = True
@@ -1490,13 +1493,17 @@ def setup_host_resolv(config_opts):
     config_opts['nspawn_args'] += ['--bind={0}:/etc/resolv.conf'.format(resolv_path)]
 
 @traceLog()
-def load_config(config_path, name, uidManager, version, pkg_python_dir):
-    log = logging.getLogger()
+def load_defaults(uidManager, version, pkg_python_dir):
     if uidManager:
         gid = uidManager.unprivUid
     else:
         gid = os.getuid()
-    config_opts = setup_default_config_opts(gid, version, pkg_python_dir)
+    return setup_default_config_opts(gid, version, pkg_python_dir)
+
+@traceLog()
+def load_config(config_path, name, uidManager, version, pkg_python_dir):
+    log = logging.getLogger()
+    config_opts = load_defaults(uidManager, version, pkg_python_dir)
 
     # array to save config paths
     config_opts['config_path'] = config_path
@@ -1532,6 +1539,11 @@ def load_config(config_path, name, uidManager, version, pkg_python_dir):
 
     if config_opts['use_container_host_hostname'] and '%_buildhost' not in config_opts['macros']:
         config_opts['macros']['%_buildhost'] = socket.getfqdn()
+
+    # Now when all options are correctly loaded from config files, turn the
+    # jinja templating ON.
+    config_opts['__jinja_expand'] = True
+
     return config_opts
 
 
