@@ -1,9 +1,6 @@
 %bcond_with lint
 %bcond_without tests
 
-# mock group id allocate for Fedora
-%global mockgid 135
-
 %global __python %{__python3}
 %global python_sitelib %{python3_sitelib}
 
@@ -36,13 +33,11 @@ Conflicts: mock-core-configs < 33
 # Requires 'mock-core-configs', or replacement (GitHub PR#544).
 Requires: mock-configs
 Requires: %{name}-filesystem = %{version}-%{release}
-%if 0%{?fedora} || 0%{?rhel} >= 8
 # This is still preferred package providing 'mock-configs'
 Suggests: mock-core-configs
-%endif
 
 Requires: systemd
-%if 0%{?fedora} || 0%{?rhel} >= 8
+%if 0%{?fedora} || 0%{?rhel}
 Requires: systemd-container
 %endif
 Requires: coreutils
@@ -68,6 +63,8 @@ BuildRequires: python%{python3_pkgversion}-pylint
 BuildRequires: python%{python3_pkgversion}-rpm
 BuildRequires: python%{python3_pkgversion}-rpmautospec-core
 
+BuildRequires: argparse-manpage
+
 %if 0%{?fedora} >= 38
 # DNF5 stack
 Recommends: dnf5
@@ -86,17 +83,19 @@ Recommends: btrfs-progs
 Suggests: qemu-user-static
 Suggests: procenv
 Recommends: podman
+Recommends: fuse-overlayfs
 
 %if %{with tests}
 BuildRequires: python%{python3_pkgversion}-distro
 BuildRequires: python%{python3_pkgversion}-jinja2
+BuildRequires: python%{python3_pkgversion}-jsonschema
 BuildRequires: python%{python3_pkgversion}-pyroute2
 BuildRequires: python%{python3_pkgversion}-pytest
 BuildRequires: python%{python3_pkgversion}-requests
 BuildRequires: python%{python3_pkgversion}-templated-dictionary
 %endif
 
-%if 0%{?fedora} || 0%{?rhel} >= 8
+%if 0%{?fedora} || 0%{?rhel}
 BuildRequires: perl-interpreter
 %else
 BuildRequires: perl
@@ -146,6 +145,9 @@ Mock plugin that preprocesses spec files using rpmautospec.
 %package filesystem
 Summary:  Mock filesystem layout
 Requires(pre):  shadow-utils
+BuildRequires:  systemd-rpm-macros
+
+%{?sysusers_requires_compat}
 
 %description filesystem
 Filesystem layout and group for Mock.
@@ -169,6 +171,12 @@ done
 
 ./precompile-bash-completion "mock.complete"
 
+# this is what %%sysusers_create_compat will expand to
+%{_rpmconfigdir}/sysusers.generate-pre.sh mock.conf > sysusers_script
+
+argparse-manpage --pyfile ./py/mock-isolated-repo.py --function _argparser > mock-isolated-repo.1
+
+
 %install
 #base filesystem
 mkdir -p %{buildroot}%{_sysconfdir}/mock/eol/templates
@@ -177,6 +185,7 @@ mkdir -p %{buildroot}%{_sysconfdir}/mock/templates
 install -d %{buildroot}%{_bindir}
 install -d %{buildroot}%{_libexecdir}/mock
 install mockchain %{buildroot}%{_bindir}/mockchain
+install py/mock-isolated-repo.py %{buildroot}%{_bindir}/mock-isolated-repo
 install py/mock-parse-buildlog.py %{buildroot}%{_bindir}/mock-parse-buildlog
 install py/mock.py %{buildroot}%{_libexecdir}/mock/mock
 ln -s consolehelper %{buildroot}%{_bindir}/mock
@@ -203,7 +212,7 @@ install -d %{buildroot}%{python_sitelib}/
 cp -a py/mockbuild %{buildroot}%{python_sitelib}/
 
 install -d %{buildroot}%{_mandir}/man1
-cp -a docs/mock.1 docs/mock-parse-buildlog.1 %{buildroot}%{_mandir}/man1/
+cp -a docs/mock.1 docs/mock-parse-buildlog.1 mock-isolated-repo.1 %{buildroot}%{_mandir}/man1/
 install -d %{buildroot}%{_datadir}/cheat
 cp -a docs/mock.cheat %{buildroot}%{_datadir}/cheat/mock
 
@@ -211,15 +220,18 @@ install -d %{buildroot}/var/lib/mock
 install -d %{buildroot}/var/cache/mock
 
 mkdir -p %{buildroot}%{_pkgdocdir}
+install -p -m 0644 docs/buildroot-lock-schema-*.json %{buildroot}%{_pkgdocdir}
 install -p -m 0644 docs/site-defaults.cfg %{buildroot}%{_pkgdocdir}
+
+mkdir -p %{buildroot}%{_sysusersdir}
+install -p -D -m 0644 %{name}.conf %{buildroot}%{_sysusersdir}
 
 sed -i 's/^_MOCK_NVR = None$/_MOCK_NVR = "%name-%version-%release"/' \
     %{buildroot}%{_libexecdir}/mock/mock
 
-%pre filesystem
-# check for existence of mock group, create it if not found
-getent group mock > /dev/null || groupadd -f -g %mockgid -r mock
-exit 0
+
+%pre filesystem -f sysusers_script
+
 
 %check
 %if %{with lint}
@@ -236,6 +248,7 @@ pylint-3 py/mockbuild/ py/*.py py/mockbuild/plugins/* || :
 %defattr(0644, root, mock)
 %dir %{_pkgdocdir}/
 %doc %{_pkgdocdir}/site-defaults.cfg
+%doc %{_pkgdocdir}/buildroot-lock-schema-*.json
 %{_datadir}/bash-completion/completions/mock
 %{_datadir}/bash-completion/completions/mock-parse-buildlog
 
@@ -244,6 +257,7 @@ pylint-3 py/mockbuild/ py/*.py py/mockbuild/plugins/* || :
 # executables
 %{_bindir}/mock
 %{_bindir}/mockchain
+%{_bindir}/mock-isolated-repo
 %{_bindir}/mock-parse-buildlog
 %{_libexecdir}/mock
 
@@ -253,9 +267,12 @@ pylint-3 py/mockbuild/ py/*.py py/mockbuild/plugins/* || :
 %exclude %{python_sitelib}/mockbuild/__pycache__/scm.*
 %exclude %{python_sitelib}/mockbuild/plugins/lvm_root.*
 %exclude %{python_sitelib}/mockbuild/plugins/__pycache__/lvm_root.*
+%exclude %{python_sitelib}/mockbuild/plugins/rpmautospec.*
+%exclude %{python3_sitelib}/mockbuild/plugins/__pycache__/rpmautospec.*.py*
 
 # config files
 %config(noreplace) %{_sysconfdir}/%{name}/*.ini
+%config(noreplace) %{_sysconfdir}/%{name}/isolated-build.cfg
 %config(noreplace) %{_sysconfdir}/pam.d/%{name}
 %config(noreplace) %{_sysconfdir}/security/console.apps/%{name}
 
@@ -266,6 +283,7 @@ pylint-3 py/mockbuild/ py/*.py py/mockbuild/plugins/* || :
 # docs
 %{_mandir}/man1/mock.1*
 %{_mandir}/man1/mock-parse-buildlog.1*
+%{_mandir}/man1/mock-isolated-repo.1*
 %{_datadir}/cheat/mock
 
 # cache & build dirs
@@ -292,6 +310,7 @@ pylint-3 py/mockbuild/ py/*.py py/mockbuild/plugins/* || :
 %dir  %{_sysconfdir}/mock/eol/templates
 %dir  %{_sysconfdir}/mock/templates
 %dir  %{_datadir}/cheat
+%config(noreplace) %{_sysusersdir}/mock.conf
 
 %changelog
 * Tue May 14 2024 Jakub Kadlcik <frostyx@email.cz> 5.6-1

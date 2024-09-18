@@ -69,6 +69,8 @@ Versions in Linux distributions:
 
 
 ## Release Notes
+* [Configs 41.1](Release-Notes-Configs-41.1) - EL7 configs EOL. F38 EOL. F41 branched.
+* [Configs 40.6](Release-Notes-Configs-40.6) - CentOS Stream 10 uses mirrored repositories.
 * [Configs 40.5](Release-Notes-Configs-40.5) - Fedora 38 moved to EOL. CentOS Stream 8 moved to vault.
 * [5.6](Release-Notes-5.6) - Improved performance of bash completion, don't use `--allowerasing` for commands that doesn't provide it, fixed "no space left" tracebacks, new Circle Linux 9 configs, Mageia Cauldron i686, fixed Fedora ELN.
 * [Configs 40.3](Release-Notes-Configs-40.3) - Added C10s chroots, Dropped Fedora modular repositories, fix bootstrap from image for openSUSE
@@ -187,6 +189,7 @@ See a [separate document](Mock-Core-Configs).
 ## Plugins
 
 * [bind_mount](Plugin-BindMount) - bind mountpoints inside the chroot
+* [buildroot_lock](Plugin-BuildrootLock) - provide a buildroot lockfile
 * [ccache](Plugin-CCache) - compiler cache plugin
 * [chroot_scan](Plugin-ChrootScan) - allows you to retrieve build artifacts from buildroot (e.g. additional logs, coredumps)
 * [compress_logs](Plugin-CompressLogs) - compress logs
@@ -223,6 +226,7 @@ Every plugin has a corresponding wiki page with docs.
 * [package managers](Feature-package-managers) - supported package managers
 * [rhel chroots](Feature-rhelchroots) - builds for RHEL
 * [GPG keys and SSL](feature-gpg-and-ssl) - how to get your GPG keys and SSL certificates to buildroot
+* [Isolated (offline) Builds](feature-isolated-builds) - doing offline builds with Mock
 
 ## Using Mock outside your git sandbox
 

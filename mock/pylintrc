@@ -1,6 +1,6 @@
 # mock pylint configuration
 
-[MASTER]
+[MAIN]
 
 # Pickle collected data for later comparisons.
 persistent=no
@@ -96,9 +96,6 @@ good-names=i,j,k,ex,Run,_
 # Bad variable names which should always be refused, separated by a comma
 bad-names=foo,bar,baz,toto,tutu,tata
 
-# List of builtins function names that should not be used, separated by a comma
-bad-functions=apply,input
-
 
 [DESIGN]
 
@@ -112,7 +109,7 @@ max-locals=20
 max-returns=6
 
 # Maximum number of branch for function / method body
-max-branchs=20
+max-branches=20
 
 # Maximum number of statements in function / method body
 max-statements=50
@@ -130,16 +127,13 @@ min-public-methods=1
 max-public-methods=20
 
 
-[CLASSES]
-
-
 [FORMAT]
 
 # Maximum number of characters on a single line.
 max-line-length=120
 
 # Maximum number of lines in a module
-max-module-lines=1000
+max-module-lines=2000
 
 # String used as indentation unit. This is usually " " (4 spaces) or "\t" (1
 # tab).

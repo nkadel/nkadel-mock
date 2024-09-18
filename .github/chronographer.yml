@@ -1,0 +1,8 @@
+---
+# Config for https://github.com/sanitizers/chronographer-github-app
+labels:
+  fragment-provided: ~  # opt out
+  skip-changelog: no-release-notes
+
+action-hints:
+  external-docs-url: hhttps://rpm-software-management.github.io/mock/Release-Notes-New-Entry

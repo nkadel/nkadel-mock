@@ -262,7 +262,27 @@ class Buildroot(object):
                 podman = Podman(self, self.bootstrap_image)
 
             with _fallback("Can't initialize from bootstrap image"):
-                podman.retry_image_pull(self.config["image_keep_getting"])
+                if not self.config["image_skip_pull"]:
+                    podman.retry_image_pull(self.config["image_keep_getting"])
+                else:
+                    getLog().info("Using local image %s (pull skipped)",
+                                  self.bootstrap_image)
+
+                if self.config["isolated_build"]:
+                    tarball = os.path.join(self.config["offline_local_repository"],
+                                           "bootstrap.tar")
+                    podman.import_tarball(tarball)
+
+                digest_expected = self.config.get("image_assert_digest", None)
+                if digest_expected:
+                    getLog().info("Checking image digest: %s",
+                                  digest_expected)
+                    digest = podman.get_image_digest()
+                    if digest != digest_expected:
+                        raise BootstrapError(
+                            f"Expected digest for image {podman.image} is"
+                            f"{digest_expected}, but {digest} found.")
+
                 podman.cp(self.make_chroot_path(), self.config["tar_binary"])
                 file_util.unlink_if_exists(os.path.join(self.make_chroot_path(),
                                                         "etc/rpm/macros.image-language-conf"))

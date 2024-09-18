@@ -3,7 +3,7 @@
 %endif
 
 Name:       mock-core-configs
-Version:    40.5
+Version:    41.2
 Release:    1%{?dist}
 Summary:    Mock core config files basic chroots
 
@@ -22,7 +22,7 @@ BuildArch:  noarch
 Provides: mock-configs
 
 # distribution-gpg-keys contains GPG keys used by mock configs
-Requires:   distribution-gpg-keys >= 1.98
+Requires:   distribution-gpg-keys >= 1.105
 # specify minimal compatible version of mock
 Requires:   mock >= 5.4.post1
 Requires:   mock-filesystem
@@ -50,8 +50,6 @@ Rocky Linux and various other specific or combined chroots.
 
 
 %install
-mkdir -p %{buildroot}%{_sysusersdir}
-
 mkdir -p %{buildroot}%{_sysconfdir}/mock/eol/templates
 mkdir -p %{buildroot}%{_sysconfdir}/mock/templates
 cp -a etc/mock/*.cfg %{buildroot}%{_sysconfdir}/mock
@@ -151,6 +149,26 @@ fi
 %ghost %config(noreplace,missingok) %{_sysconfdir}/mock/default.cfg
 
 %changelog
+* Thu Aug 15 2024 Pavel Raiskup <praiskup@redhat.com> 41.2-1
+- fix centos-stream+epel-10-s390x /bin/sed typo
+
+* Wed Aug 14 2024 Pavel Raiskup <praiskup@redhat.com> 41.1-1
+- branch F41 from Rawhide (frostyx@email.cz)
+- added centos-stream+epel-10 configs
+- Enable RPM sysusers integration (j1.kyjovsky@gmail.com)
+- Rawhide to accept GPG key from future Fedora Rawhide+1
+- openEuler 24.03 LTS (nucleo@fedoraproject.org)
+- drop fedora-eln-i386 (yselkowi@redhat.com)
+- Switch CentOS 7 to vault.centos.org (robert@fedoraproject.org)
+- Fix GPG keys for CentOS Stream 10 repositories (daan.j.demeyer@gmail.com)
+- EOL epel-7 configuration
+- CentOS 7 is EOL
+- Fedora 41+ configuration images are "dnf5 ready"
+- Use metalinks for c10s {baseos,appstream,crb}-{source,debuginfo} (miro@hroncok.cz)
+
+* Sat Jun 15 2024 Pavel Raiskup <praiskup@redhat.com> 40.6-1
+- c10s config use mirrored metalinks
+
 * Wed Jun 05 2024 Miroslav Suchý <msuchy@redhat.com> 40.5-1
 - CentOS Stream 8 is EOL (andykimpe@gmail.com)
 - configs: Fedora 38 goes EOL (praiskup@redhat.com)

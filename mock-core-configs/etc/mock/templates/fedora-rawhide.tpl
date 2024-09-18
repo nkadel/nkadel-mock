@@ -7,16 +7,13 @@ config_opts['chroot_setup_cmd'] = 'install @{% if mirrored %}buildsys-{% endif %
 
 config_opts['dist'] = 'rawhide'  # only useful for --resultdir variable subst
 config_opts['extra_chroot_dirs'] = [ '/run/lock', ]
-config_opts['releasever'] = '41'
+config_opts['releasever'] = '42'
 
 # https://fedoraproject.org/wiki/Changes/BuildWithDNF5
 config_opts['package_manager'] = 'dnf5'
 
 config_opts['bootstrap_image'] = 'registry.fedoraproject.org/fedora:rawhide'
-
-# For F41+ there's https://fedoraproject.org/wiki/Changes/ReplaceDnfWithDnf5 so
-# once done, re-revert https://pagure.io/fedora-kickstarts/c/f7bf98d3af6d655c6d64ba9c8d2f88cbffbbb06d?branch=main
-#config_opts['bootstrap_image_ready'] = True
+config_opts['bootstrap_image_ready'] = True
 
 config_opts['description'] = 'Fedora Rawhide'
 
@@ -42,7 +39,7 @@ user_agent={{ user_agent }}
 
 {%- macro rawhide_gpg_keys() -%}
 file:///usr/share/distribution-gpg-keys/fedora/RPM-GPG-KEY-fedora-$releasever-primary
-{%- for version in [releasever|int, releasever|int - 1]
+{%- for version in [releasever|int, releasever|int - 1, releasever|int + 1]
 %} file:///usr/share/distribution-gpg-keys/fedora/RPM-GPG-KEY-fedora-{{ version }}-primary
 {%- endfor %}
 {%- endmacro %}

@@ -61,23 +61,13 @@ import copy
 
 # pylint: disable=import-error
 from functools import partial
-from mockbuild import config
-from mockbuild import util
-from mockbuild.constants import MOCKCONFDIR, PYTHONDIR, VERSION
-from mockbuild.file_downloader import FileDownloader
-from mockbuild.mounts import BindMountPoint, FileSystemMountPoint
-
-# import all mockbuild.* modules after this.
-sys.path.insert(0, PYTHONDIR)
-
-# set up basic logging until config file can be read
-FORMAT = "%(levelname)s: %(message)s"
-logging.basicConfig(format=FORMAT, level=logging.WARNING)
-log = logging.getLogger()
 
 # our imports
-# pylint: disable=wrong-import-position
-
+from mockbuild import config
+from mockbuild import util
+from mockbuild.constants import MOCKCONFDIR, VERSION
+from mockbuild.file_downloader import FileDownloader
+from mockbuild.mounts import BindMountPoint, FileSystemMountPoint
 import mockbuild.backend
 from mockbuild.backend import Commands
 from mockbuild.buildroot import Buildroot
@@ -87,6 +77,13 @@ import mockbuild.rebuild
 from mockbuild.state import State
 from mockbuild.trace_decorator import traceLog
 import mockbuild.uid
+from mockbuild.scrub_all import scrub_all_chroots
+
+# set up basic logging until config file can be read
+FORMAT = "%(levelname)s: %(message)s"
+logging.basicConfig(format=FORMAT, level=logging.WARNING)
+log = logging.getLogger()
+
 
 signal_names = {1: "SIGHUP",
                 13: "SIGPIPE",
@@ -120,6 +117,9 @@ def command_parse():
     parser.add_option("--rebuild", action="store_const", const="rebuild",
                       dest="mode", default='__default__',
                       help="rebuild the specified SRPM(s)")
+    parser.add_option("--calculate-build-dependencies", action="store_const",
+                      const="calculatedeps", dest="mode",
+                      help="Resolve and install static and dynamic build dependencies")
     parser.add_option("--chain", action="store_const", const="chain",
                       dest="mode",
                       help="build multiple RPMs in chain loop")
@@ -150,6 +150,14 @@ def command_parse():
                       metavar=scrub_metavar,
                       help="completely remove the specified chroot "
                            "or cache dir or all of the chroot and cache")
+    parser.add_option(
+        "--scrub-all-chroots", action="store_const", dest="mode",
+        const="scrub-all-chroots", help=(
+            "Run mock --scrub=all for all chroots that appear to have been "
+            "used previously (see manual page for more info)."
+        ),
+
+    )
     parser.add_option("--init", action="store_const", const="init", dest="mode",
                       help="initialize the chroot, do not build anything")
     parser.add_option("--installdeps", action="store_const", const="installdeps",
@@ -390,6 +398,9 @@ def command_parse():
                       type=str, dest="additional_packages",
                       help=("Additional package to install into the buildroot before "
                             "the build is done.  Can be specified multiple times."))
+    parser.add_option("--isolated-build", nargs=2,
+                      metavar=("LOCKFILE", "REPO_DIRECTORY"),
+                      help="Perform an isolated (fully offline) SRPM build")
 
     (options, args) = parser.parse_known_args()
 
@@ -401,6 +412,20 @@ def command_parse():
             args = args[1:]
         else:
             options.mode = 'rebuild'
+
+    if options.isolated_build and options.chroot != 'default':
+        raise mockbuild.exception.BadCmdline(
+            "The --isolated-build mode uses a special chroot configuration, "
+            "you can not select the chroot configuration with the "
+            "-r/--root option.")
+
+    if options.isolated_build and options.mode != "rebuild":
+        raise mockbuild.exception.BadCmdline("--rebuild mode needed with --isolated-build")
+
+    options.calculatedeps = None
+    if options.mode == "calculatedeps":
+        options.mode = "rebuild"
+        options.calculatedeps = True
 
     # Optparse.parse_args() eats '--' argument, while argparse doesn't.  Do it manually.
     if args and args[0] == '--':
@@ -586,9 +611,9 @@ def do_debugconfig(config_opts, expand=False):
 
 
 @traceLog()
-def do_listchroots(config_opts, uidManager):
+def do_listchroots(config_path, uidManager):
     uidManager.run_in_subprocess_without_privileges(
-        config.list_configs, config_opts,
+        config.list_configs, config_path,
     )
 
 
@@ -668,10 +693,16 @@ def main():
     if options.printrootpath or options.list_snapshots:
         options.verbose = 0
 
+    if options.mode == "scrub-all-chroots":
+        return scrub_all_chroots()
+
     # config path -- can be overridden on cmdline
     config_path = MOCKCONFDIR
     if options.configdir:
         config_path = options.configdir
+
+    if options.isolated_build:
+        options.chroot = "isolated-build"
 
     config_opts = uidManager.run_in_subprocess_without_privileges(
             config.load_config, config_path, options.chroot)
@@ -946,6 +977,11 @@ def run_command(options, args, config_opts, commands, buildroot):
         buildroot.remove(*args)
 
     elif options.mode == 'rebuild':
+        if options.isolated_build:
+            # No caches with isolated builds!  Bootstrap is extracted from
+            # given tarball, buildroot installed from pre-fetched RPMs.
+            commands.scrub(["all"])
+
         if config_opts['scm'] or (options.spec and options.sources):
             srpm = mockbuild.rebuild.do_buildsrpm(config_opts, commands, buildroot, options, args)
             if srpm:
@@ -980,7 +1016,7 @@ def run_command(options, args, config_opts, commands, buildroot):
         do_debugconfig(config_opts, True)
 
     elif options.mode == 'listchroots':
-        do_listchroots(config_opts, buildroot.uid_manager)
+        do_listchroots(config_opts["config_path"], buildroot.uid_manager)
 
     elif options.mode == 'orphanskill':
         util.orphansKill(buildroot.make_chroot_path())
